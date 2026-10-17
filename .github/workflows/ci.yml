@@ -35,12 +35,19 @@ jobs:
       - name: trivy
         run: |
           status=0
-          while read -r img; do
-            docker run --rm -v "$PWD/.trivyignore.yaml:/trivyignore.yaml:ro" \
+          scan() {
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/.trivyignore.yaml:/trivyignore.yaml:ro" \
               aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222 \
-              image --image-src remote --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
+              image --image-src "$1" --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
               --ignorefile /trivyignore.yaml \
               --skip-files /usr/local/bin/gosu,/usr/local/bin/timescaledb-parallel-copy,/usr/local/bin/timescaledb-tune \
-              "$img" || status=1
+              "$2" || status=1
+          }
+          for img in backup bootstrap; do
+            docker build -q -t "zabbix-$img:ci" "$img"
+            scan docker "zabbix-$img:ci"
+          done
+          while read -r img; do
+            scan remote "$img"
           done < <(sed -n 's/^[[:space:]]*image:[[:space:]]*["'"'"']\{0,1\}\([^"'"'"'[:space:]]*\).*/\1/p' compose.yaml | sort -u)
           exit $status

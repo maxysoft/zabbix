@@ -1,8 +1,11 @@
 #!/bin/sh
-set -eu
+# shellcheck disable=SC3040
+set -eu -o pipefail
+umask 077
 
 DIR=/backups
 STATUS=$DIR/.status
+RECIPIENTS=/tmp/age-recipients
 PGPASSWORD=$(cat /run/secrets/zabbix_db_password)
 export PGPASSWORD
 
@@ -23,16 +26,22 @@ backup() {
     done
   fi
   file="$DIR/zabbix-$(date +%Y%m%d-%H%M%S)$suffix.dump"
-  if ! pg_dump -Fc -f "$file.partial" "$@"; then
+  # errexit is off inside this if: each dump command must stay the last command of its branch.
+  if [ -n "${BACKUP_AGE_RECIPIENTS:-}" ]; then
+    file=$file.age
+    pg_dump -Fc "$@" | age -R "$RECIPIENTS" > "$file.partial"
+  else
+    pg_dump -Fc -f "$file.partial" "$@"
+  fi || {
     rm -f "$file.partial"
     return 1
-  fi
+  }
   mv "$file.partial" "$file"
   echo "backup: wrote $file ($(du -h "$file" | cut -f1))"
 }
 
 prune() {
-  find "$DIR" -maxdepth 1 -type f \( -name 'zabbix-*.dump' -o -name 'zabbix-*.partial' \) -mtime +"$BACKUP_KEEP_DAYS" -delete
+  find "$DIR" -maxdepth 1 -type f \( -name 'zabbix-*.dump' -o -name 'zabbix-*.dump.age' -o -name 'zabbix-*.partial' \) -mtime +"$BACKUP_KEEP_DAYS" -delete
 }
 
 case "${BACKUP_HOUR:-}" in
@@ -42,6 +51,13 @@ esac
 case "${BACKUP_KEEP_DAYS:-}" in
   '' | *[!0-9]*) echo "backup: BACKUP_KEEP_DAYS must be a number" >&2; exit 1 ;;
 esac
+if [ -n "${BACKUP_AGE_RECIPIENTS:-}" ]; then
+  printf '%s\n' "$BACKUP_AGE_RECIPIENTS" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' > "$RECIPIENTS"
+  if ! age -R "$RECIPIENTS" < /dev/null > /dev/null; then
+    echo "backup: BACKUP_AGE_RECIPIENTS must be a comma-separated list of age (age1...) or SSH (ssh-ed25519 ..., ssh-rsa ...) public keys" >&2
+    exit 1
+  fi
+fi
 
 if [ "${1:-}" = --once ]; then
   backup
@@ -49,7 +65,7 @@ if [ "${1:-}" = --once ]; then
   exit 0
 fi
 
-echo "backup: daily at $BACKUP_HOUR:00 ($(date +%Z)), keeping $BACKUP_KEEP_DAYS days, exclude history: ${BACKUP_EXCLUDE_HISTORY:-false}"
+echo "backup: daily at $BACKUP_HOUR:00 ($(date +%Z)), keeping $BACKUP_KEEP_DAYS days, exclude history: ${BACKUP_EXCLUDE_HISTORY:-false}, encrypted: $([ -n "${BACKUP_AGE_RECIPIENTS:-}" ] && echo yes || echo no)"
 hour=$((${BACKUP_HOUR#0} + 0))
 last=
 while :; do

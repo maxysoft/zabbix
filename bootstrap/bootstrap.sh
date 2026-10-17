@@ -80,19 +80,24 @@ configure_frontend_url() {
   log "frontend URL set to ${ZBX_PUBLIC_URL%/}"
 }
 
-configure_agent_interface() {
-  local iface
-  iface=$(echo '{"output": ["hostid"], "filter": {"host": "Zabbix server"}, "selectInterfaces": ["interfaceid", "type", "main", "useip", "dns", "port"]}' |
-    api host.get | jq -c '[.[0].interfaces[]? | select(.type == "1" and .main == "1")][0] // empty')
-  if [ -z "$iface" ]; then
-    log "host \"Zabbix server\" has no main agent interface, skipped"
+use_active_agent_template() {
+  local host passive active keys ids
+  host=$(echo '{"output": ["hostid"], "filter": {"host": "Zabbix server"}, "selectParentTemplates": ["templateid", "host"]}' | api host.get | jq -c '.[0] // {}')
+  passive=$(jq -r '.parentTemplates[]? | select(.host == "Linux by Zabbix agent") | .templateid' <<<"$host")
+  [ -n "$passive" ] || return 0
+  active=$(get_id template templateid '{"host": "Linux by Zabbix agent active"}')
+  if [ -z "$active" ]; then
+    log "template \"Linux by Zabbix agent active\" not found, host \"Zabbix server\" keeps \"Linux by Zabbix agent\""
     return 0
   fi
-  if jq -e '.useip == "0" and .dns == "zabbix-agent" and .port == "10050"' >/dev/null <<<"$iface"; then
-    return 0
-  fi
-  jq -c '{interfaceid, useip: 0, dns: "zabbix-agent", port: "10050"}' <<<"$iface" | api hostinterface.update >/dev/null
-  log "host \"Zabbix server\" agent interface pointed at zabbix-agent:10050"
+  keys=$(jq -n --arg t "$passive" '{output: ["key_"], templateids: [$t]}' | api item.get | jq -c 'map(.key_)')
+  # Unlink without templates_clear, then link: Zabbix merges the now unlinked items into the active template's items with the same key, so their history stays.
+  jq -c --arg p "$passive" '{hostid, templates: [.parentTemplates[] | select(.templateid != $p) | {templateid}]}' <<<"$host" | api host.update >/dev/null
+  jq -c --arg p "$passive" --arg a "$active" '{hostid, templates: ([.parentTemplates[] | select(.templateid != $p and .templateid != $a) | {templateid}] + [{templateid: $a}])}' <<<"$host" | api host.update >/dev/null
+  ids=$(jq -c '{output: ["key_", "templateid"], hostids: [.hostid]}' <<<"$host" | api item.get |
+    jq -c --argjson k "$keys" '[.[] | select(.templateid == "0" and (.key_ | IN($k[]))) | .itemid]')
+  [ "$ids" = '[]' ] || api item.delete <<<"$ids" >/dev/null
+  log "host \"Zabbix server\": template \"Linux by Zabbix agent\" replaced by \"Linux by Zabbix agent active\", $(jq length <<<"$ids") leftover item(s) of the old template deleted"
 }
 
 ensure_guest_disabled() {
@@ -252,7 +257,7 @@ main() {
   wait_for_api
   login_admin
   configure_frontend_url
-  configure_agent_interface
+  use_active_agent_template
   ensure_guest_disabled
   configure_telegram
   configure_slack

@@ -61,5 +61,6 @@ Setup complete. Next steps:
   2. Optional: write bot tokens into secrets/telegram_bot_token and secrets/slack_bot_token,
      then run sudo ./setup.sh again to fix their permissions.
   3. Start the stack: docker compose up -d
+  4. Install the agent on this host: sudo scripts/install-agent.sh
 The web UI user is Admin. Its password is in secrets/zabbix_admin_password (sudo cat secrets/zabbix_admin_password).
 EOF

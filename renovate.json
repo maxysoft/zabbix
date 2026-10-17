@@ -7,6 +7,13 @@
       "managerFilePatterns": ["/^\\.github/workflows/ci\\.yml$/"],
       "matchStrings": ["(?<depName>aquasec/trivy):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})"],
       "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^backup/Dockerfile$/"],
+      "matchStrings": ["ARG AGE_VERSION=(?<currentValue>v\\S+)"],
+      "depNameTemplate": "filippo.io/age",
+      "datasourceTemplate": "go"
     }
   ],
   "packageRules": [
@@ -15,8 +22,13 @@
       "groupName": "zabbix"
     },
     {
+      "matchPackageNames": ["zabbix/**"],
+      "matchCurrentValue": "alpine-trunk",
+      "enabled": false
+    },
+    {
       "matchPackageNames": ["timescale/timescaledb"],
-      "allowedVersions": "/^2\\.(1[3-9]|2[0-9])\\.\\d+-pg18$/"
+      "allowedVersions": "/^2\\.2[0-9]\\.\\d+-pg18$/"
     }
   ]
 }

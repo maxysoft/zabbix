@@ -32,7 +32,7 @@ services:
       TIMESCALEDB_TELEMETRY: "off"
       TS_TUNE_MAX_CONNS: "200"
       TZ: ${TZ:-UTC}
-    secrets: [postgres_password, zabbix_db_password]
+    secrets: [postgres_password, zabbix_db_password, zabbix_admin_password]
     volumes:
       - pgdata:/var/lib/postgresql
       # Mount the file, not the directory: the image keeps its own TimescaleDB init scripts there.
@@ -55,7 +55,7 @@ services:
 
   zabbix-server:
     <<: *hardened
-    image: zabbix/zabbix-server-pgsql:alpine-7.4-latest@sha256:07cdd9be60295f96fcdf07b2e7abfb513451e729329532faf5ad37c8d8aa27bc
+    image: zabbix/zabbix-server-pgsql:alpine-trunk@sha256:a14a8ce0abeacb395f1758169f98c915abf4729674a21740fc6f3559eb55d544
     restart: unless-stopped
     stop_grace_period: 30s
     cap_add: [NET_RAW]
@@ -65,7 +65,7 @@ services:
     environment:
       <<: *db-env
       ENABLE_TIMESCALEDB: "true"
-    secrets: [zabbix_db_password, zabbix_admin_password]
+    secrets: [zabbix_db_password]
     volumes:
       # Mount files, not ./theme/dbscripts: a file mount nested in a directory mount creates an empty placeholder in the host directory.
       - ./config/zabbix/admin-password.sql:/var/lib/zabbix/dbscripts/00-admin-password.sql:ro
@@ -90,7 +90,7 @@ services:
 
   zabbix-web:
     <<: *hardened
-    image: zabbix/zabbix-web-nginx-pgsql:alpine-7.4-latest@sha256:8457fc4b765c6bf3aed486cff0422014aef1f6cb67f2fd2b649a84bb87e14b58
+    image: zabbix/zabbix-web-nginx-pgsql:alpine-trunk@sha256:5983fa35495be7c51c6e7bcf339c6fcc1b66c39c977acbe99859a97bdecbbca7
     read_only: false
     restart: unless-stopped
     depends_on:
@@ -131,33 +131,9 @@ services:
           memory: 512m
     networks: [backend, frontend]
 
-  zabbix-agent:
-    image: zabbix/zabbix-agent2:alpine-7.4-latest@sha256:124dc45f159eeac5eda7360b9dc3387895050227cb11581cefb7e1834f1eb477
-    restart: unless-stopped
-    privileged: true
-    pid: host
-    logging: *logging
-    environment:
-      ZBX_HOSTNAME: Zabbix server
-      ZBX_SERVER_HOST: zabbix-server
-      TZ: ${TZ:-UTC}
-    healthcheck:
-      # 2742 is port 10050 in hex. A TCP probe would log a rejected connection every interval.
-      test: ["CMD", "grep", "-qs", ":2742 [0-9A-F]*:0000 0A", "/proc/net/tcp", "/proc/net/tcp6"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 1m
-      start_interval: 5s
-    deploy:
-      resources:
-        limits:
-          memory: 256m
-    networks: [backend]
-
   zabbix-bootstrap:
     <<: *hardened
-    image: zabbix/zabbix-server-pgsql:alpine-7.4-latest@sha256:07cdd9be60295f96fcdf07b2e7abfb513451e729329532faf5ad37c8d8aa27bc
+    build: bootstrap
     entrypoint: ["bash", "/usr/local/bin/bootstrap.sh"]
     init: true
     restart: "no"
@@ -183,7 +159,7 @@ services:
 
   zabbix-backup:
     <<: *hardened
-    image: timescale/timescaledb:2.29.2-pg18@sha256:9508616d5b941ed931198504c5db3fb47e8f53f790732ea1e889591f1062057c
+    build: backup
     user: postgres
     entrypoint: ["sh", "/usr/local/bin/backup.sh"]
     init: true
@@ -198,6 +174,7 @@ services:
       BACKUP_HOUR: ${BACKUP_HOUR:-3}
       BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-7}
       BACKUP_EXCLUDE_HISTORY: ${BACKUP_EXCLUDE_HISTORY:-false}
+      BACKUP_AGE_RECIPIENTS: ${BACKUP_AGE_RECIPIENTS:-}
       TZ: ${TZ:-UTC}
     secrets: [zabbix_db_password]
     volumes:

@@ -8,54 +8,48 @@ vulnerabilities:
   - id: CVE-2026-45305
     statement: "zabbix-web symfony/yaml: reachable only through the authenticated YAML import, by users with import rights."
     expired_at: 2026-12-16
-  - id: CVE-2026-56854
-    statement: "zabbix-agent2 golang.org/x/crypto in the mongodb, mssql and postgresql plugins: these plugins are not configured."
-    expired_at: 2026-12-16
-  - id: CVE-2026-78669
-    statement: "zabbix-agent2 golang.org/x/net: the agent listens only on the internal backend network."
-    expired_at: 2026-12-16
   - id: CVE-2026-14456
-    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix supports (2.13 to 2.29)."
+    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
     expired_at: 2026-12-16
   - id: CVE-2026-11352
-    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix supports (2.13 to 2.29)."
+    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
     expired_at: 2026-12-16
   - id: CVE-2026-11586
-    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix supports (2.13 to 2.29)."
+    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
     expired_at: 2026-12-16
   - id: CVE-2026-12064
-    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix supports (2.13 to 2.29)."
+    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
     expired_at: 2026-12-16
   - id: CVE-2026-8286
-    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix supports (2.13 to 2.29)."
+    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
     expired_at: 2026-12-16
   - id: CVE-2026-8458
-    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix supports (2.13 to 2.29)."
+    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
     expired_at: 2026-12-16
   - id: CVE-2026-8925
-    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix supports (2.13 to 2.29)."
+    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
     expired_at: 2026-12-16
   - id: CVE-2026-8927
-    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix supports (2.13 to 2.29)."
+    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
     expired_at: 2026-12-16
   - id: CVE-2026-9547
-    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix supports (2.13 to 2.29)."
+    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
     expired_at: 2026-12-16
   - id: CVE-2026-53612
-    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix supports (2.13 to 2.29)."
+    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
     expired_at: 2026-12-16
   - id: CVE-2026-53613
-    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix supports (2.13 to 2.29)."
+    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
     expired_at: 2026-12-16
   - id: CVE-2026-53614
-    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix supports (2.13 to 2.29)."
+    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
     expired_at: 2026-12-16
   - id: CVE-2026-76642
-    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix supports (2.13 to 2.29)."
+    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
     expired_at: 2026-12-16
   - id: CVE-2026-78408
-    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix supports (2.13 to 2.29)."
+    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
     expired_at: 2026-12-16
   - id: CVE-2026-78410
-    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix supports (2.13 to 2.29)."
+    statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
     expired_at: 2026-12-16

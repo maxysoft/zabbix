@@ -15,6 +15,9 @@ SERVER_PORT=20051
 URL=https://localhost:$WEB_PORT
 SERVER_IMAGE=$(sed -n 's/^ *image: *\(zabbix\/zabbix-server-pgsql:.*\)$/\1/p' compose.yaml | head -n 1)
 WEB_IMAGE=$(sed -n 's/^ *image: *\(zabbix\/zabbix-web-nginx-pgsql:.*\)$/\1/p' compose.yaml | head -n 1)
+AGENT_IMAGE=debian:13@sha256:913f6706df59a68922d1dd08f78c2476560a8d367897200a6005b00e5f67c2d5
+AGENT=zbxe2e-agent-$$
+SSH_KEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINonpLIkSWxTnifdcUowSZe0rhqtTLhOnDI1ZsXLZL83 e2e@test'
 export COMPOSE_PROJECT_NAME=zbxe2e
 FAILS=0
 
@@ -40,6 +43,7 @@ count_results() {
 
 teardown() {
   echo "--- teardown"
+  docker rm -f "$AGENT" >/dev/null 2>&1 || true
   if [ -d "$WD" ]; then
     (cd "$WD" && dc down -v --remove-orphans >/dev/null 2>&1) || true
     docker run --rm -u 0 -v "$REPO/.audit/e2e:/e" --entrypoint rm "$SERVER_IMAGE" -rf "/e/$RUN" || true
@@ -56,7 +60,7 @@ wait_healthy() {
   local deadline=$((SECONDS + 600)) svc status all
   while :; do
     all=1
-    for svc in postgres-server zabbix-server zabbix-web zabbix-agent zabbix-backup; do
+    for svc in postgres-server zabbix-server zabbix-web zabbix-backup; do
       status=$(docker inspect -f '{{.State.Health.Status}}' "$(dc ps -q "$svc")" 2>/dev/null || echo missing)
       [ "$status" = healthy ] || all=0
     done
@@ -68,7 +72,7 @@ wait_healthy() {
 
 echo "--- prepare $WD"
 mkdir -p "$WD/secrets"
-cp -r compose.yaml .env.example setup.sh config bootstrap scripts theme "$WD/"
+cp -r compose.yaml .env.example setup.sh config bootstrap scripts theme backup "$WD/"
 cd "$WD"
 sed -e "s/^ZBX_WEB_PORT=.*/ZBX_WEB_PORT=$WEB_PORT/" \
   -e "s/^ZBX_SERVER_PORT=.*/ZBX_SERVER_PORT=$SERVER_PORT/" \
@@ -87,8 +91,8 @@ check "setup.sh is idempotent (secrets unchanged on second run)" [ "$sums1" = "$
 check "secret files are root-only on the host" [ "$(as_root 'stat -c %a:%U secrets')" = "700:root" ]
 
 echo "--- docker compose up"
-dc up -d 2>&1 | tail -n 3
-check "stack healthy (postgres, server, web, agent, backup)" wait_healthy
+dc up -d --build 2>&1 | tail -n 3
+check "stack healthy (postgres, server, web, backup)" wait_healthy
 check "Admin password set at schema creation by pgcrypto, so Admin/zabbix never worked" [ "$(psql_pg "SELECT left(passwd, 7) FROM users WHERE username = 'Admin'")" = "\$2a\$10\$" ]
 check "zabbix-bootstrap exited 0 on first up" [ "$(bootstrap_exit_code)" = 0 ]
 dc logs --no-log-prefix zabbix-bootstrap | sed 's/^/  /'
@@ -107,9 +111,6 @@ r "Admin/zabbix is rejected" '! echo "{\"username\": \"Admin\", \"password\": \"
 r "API login with the generated Admin password" 'admin_login_params | login'
 r "frontend URL is $URL" '[ "\$(echo "{\"output\": [\"url\"]}" | api settings.get | jq -r .url)" = "$URL" ]'
 r "guest access disabled" 'echo "{\"filter\": {\"username\": \"guest\"}, \"selectUsrgrps\": [\"users_status\"]}" | api user.get | jq -e "any(.[0].usrgrps[]; .users_status == \"1\")"'
-avail() { echo '{"filter": {"host": "Zabbix server"}, "selectInterfaces": ["useip", "dns", "port", "available"]}' | api host.get | jq -e '.[0].interfaces[0] | .useip == "0" and .dns == "zabbix-agent" and .port == "10050" and .available == "1"'; }
-for _ in \$(seq 60); do avail >/dev/null 2>&1 && break; sleep 5; done
-r "host Zabbix server agent interface available via zabbix-agent:10050" avail
 mt() { echo "{\"output\": \"extend\", \"filter\": {\"name\": \"\$1\"}}" | api mediatype.get | jq -c '.[0]'; }
 r "Telegram media type enabled with token" 'mt Telegram | jq -e ".status == \"0\" and any(.parameters[]; .name == \"api_token\" and .value == \"123456:dummy-telegram-token\")"'
 r "Admin has Telegram media to 123456789" 'echo "{\"filter\": {\"username\": \"Admin\"}, \"selectMedias\": [\"mediatypeid\", \"sendto\", \"active\"]}" | api user.get | jq -e --arg mt "\$(mt Telegram | jq -r .mediatypeid)" "any(.[0].medias[]; .mediatypeid == \\\$mt and .sendto == \"123456789\" and .active == \"0\")"'
@@ -125,6 +126,36 @@ done
 r "Admin theme can be set to nord-theme" 'echo "{\"userid\": \"1\", \"theme\": \"nord-theme\"}" | api user.update'
 EOF
 
+echo "--- host agent (scripts/install-agent.sh in Debian 13 on the host network)"
+docker run -d --name "$AGENT" --network host -v "$WD:/w:ro" "$AGENT_IMAGE" sleep infinity >/dev/null
+check "install-agent.sh installs and configures agent 2" docker exec "$AGENT" bash -c \
+  'apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null && /w/scripts/install-agent.sh >/tmp/install.log 2>&1 || { tail -n 20 /tmp/install.log; exit 1; }'
+docker exec "$AGENT" bash -c 'mkdir -p /run/zabbix && chown zabbix: /run/zabbix'
+docker exec -d -u zabbix "$AGENT" zabbix_agent2 -c /etc/zabbix/zabbix_agent2.conf
+in_api_container <<'EOF' | count_results "host agent API checks"
+source /usr/local/bin/bootstrap.sh
+set +e
+admin_login_params | login
+r() { if eval "$2" >/dev/null 2>&1; then echo "PASS: $1"; else echo "FAIL: $1"; fi; }
+templates() { echo '{"filter": {"host": "Zabbix server"}, "selectParentTemplates": ["host"]}' | api host.get | jq -c '[.[0].parentTemplates[].host]'; }
+items() { echo '{"output": ["key_", "type"], "filter": {"host": "Zabbix server"}}' | api item.get; }
+active() { echo '{"output": ["active_available"], "filter": {"host": "Zabbix server"}}' | api host.get | jq -e '.[0].active_available == "1"'; }
+r "Zabbix server uses Linux by Zabbix agent active, not Linux by Zabbix agent" 'templates | jq -e "index(\"Linux by Zabbix agent active\") and (index(\"Linux by Zabbix agent\") | not)"'
+r "Zabbix server items: no duplicate keys, active agent items, no passive agent items" 'items | jq -e "(map(.key_) | length) == (map(.key_) | unique | length) and any(.[]; .type == \"7\") and all(.[]; .type != \"0\")"'
+r "Zabbix server: no leftover item zabbix[host,agent,available]" 'items | jq -e "all(.[]; .key_ != \"zabbix[host,agent,available]\")"'
+r "Zabbix server: no leftover trigger Zabbix agent is not available" 'echo "{\"output\": [\"templateid\"], \"host\": \"Zabbix server\", \"search\": {\"description\": \"Zabbix agent is not available\"}}" | api trigger.get | jq -e "length > 0 and all(.[]; .templateid != \"0\")"'
+for _ in $(seq 36); do active >/dev/null 2>&1 && break; sleep 5; done
+r "active agent available for Zabbix server" active
+EOF
+agent_listens_nowhere() {
+  docker exec -i -u zabbix "$AGENT" bash -s <<'EOF'
+pid=$(cat /run/zabbix/zabbix_agent2.pid) && [ -d "/proc/$pid" ] || exit 1
+socks=$(find "/proc/$pid/fd" -lname 'socket:*' -printf '%l\n' | tr -dc '0-9\n')
+! awk '$4 == "0A" {print $10}' /proc/net/tcp /proc/net/tcp6 | grep -qxF -f <(printf '%s\n' $socks)
+EOF
+}
+check "agent process runs and listens on no TCP port (passive checks off)" agent_listens_nowhere
+
 echo "--- DB, network and TLS checks"
 check "DB role zabbix is not a superuser" [ "$(psql_pg "SELECT rolsuper FROM pg_roles WHERE rolname = 'zabbix'")" = f ]
 check "Nord graph theme row exists" [ "$(psql_pg "SELECT count(*) FROM graph_theme WHERE theme = 'nord-theme'")" = 1 ]
@@ -135,15 +166,18 @@ secrets_not_logged() {
   done
 }
 check "admin and DB passwords not in zabbix-server or postgres-server logs" secrets_not_logged
-check "TimescaleDB hypertables exist for all 6 history tables" [ "$(psql_pg "SELECT count(*) FROM timescaledb_information.hypertables WHERE hypertable_name ~ '^history'")" = 6 ]
-check "fping zabbix-agent works inside zabbix-server" dc exec -T zabbix-server fping zabbix-agent
+check "TimescaleDB hypertables exist for all 7 history tables" [ "$(psql_pg "SELECT count(*) FROM timescaledb_information.hypertables WHERE hypertable_name ~ '^history'")" = 7 ]
+check "fping postgres-server works inside zabbix-server" dc exec -T zabbix-server fping postgres-server
 check "HTTPS port $WEB_PORT serves the login page" bash -c "docker run --rm --network host --entrypoint curl '$WEB_IMAGE' -sk https://127.0.0.1:$WEB_PORT/ | grep -q 'Sign in'"
 check "HTTP 8080 is not published on the host" [ "$(docker inspect -f '{{range $p, $b := .HostConfig.PortBindings}}{{$p}} {{end}}' "$(dc ps -q zabbix-web)")" = "8443/tcp " ]
 check "zabbix-server trapper port published only on 127.0.0.1" [ "$(docker inspect -f '{{range $p, $b := .HostConfig.PortBindings}}{{$p}}={{(index $b 0).HostIp}} {{end}}' "$(dc ps -q zabbix-server)")" = "10051/tcp=127.0.0.1 " ]
 
 echo "--- hardening"
+non_root() { [ -n "$1" ] && [ "${1%%:*}" != root ] && [ "${1%%:*}" != 0 ]; }
 for svc in postgres-server zabbix-server zabbix-web zabbix-bootstrap zabbix-backup; do
   id=$(dc ps -aq "$svc")
+  user=$(docker inspect -f '{{.Config.User}}' "$id")
+  check "$svc: runs as non-root user ($user)" non_root "$user"
   check "$svc: cap_drop ALL" [ "$(docker inspect -f '{{json .HostConfig.CapDrop}}' "$id")" = '["ALL"]' ]
   check "$svc: no-new-privileges" [ "$(docker inspect -f '{{json .HostConfig.SecurityOpt}}' "$id")" = '["no-new-privileges:true"]' ]
   if [ "$svc" = zabbix-web ]; then
@@ -198,6 +232,7 @@ r() { if eval "$2" >/dev/null 2>&1; then echo "PASS: $1"; else echo "FAIL: $1"; 
 full=$(ls /backups/zabbix-*[0-9].dump | tail -n 1)
 noh=$(ls /backups/zabbix-*-nohistory.dump | tail -n 1)
 prefixes=$(psql -XAtc "SELECT string_agg(associated_table_prefix, '|') FROM _timescaledb_catalog.hypertable WHERE table_name ~ '^(history|trends)'")
+r "plain dumps have mode 600" '[ "$(stat -c %a "$full" "$noh" | sort -u)" = 600 ]'
 r "full backup non-empty and listed by pg_restore -l" '[ -s "$full" ] && pg_restore -l "$full" | grep -q "TABLE DATA public items "'
 r "full backup holds history/trends chunk data" 'pg_restore -l "$full" | grep -qE "TABLE DATA _timescaledb_internal ($prefixes)_[0-9]+_chunk "'
 r "full backup holds compressed history chunk data" 'pg_restore -l "$full" | grep -qE "TABLE DATA _timescaledb_internal ($prefixes)_[0-9]+_chunk_compressed "'
@@ -211,13 +246,52 @@ full=$(in_backup_container <<<'ls /backups/zabbix-*[0-9].dump | tail -n 1')
 restore() {
   psql_pg "CREATE DATABASE zabbix_restore OWNER zabbix" postgres &&
     psql_pg "SELECT timescaledb_pre_restore()" zabbix_restore >/dev/null &&
-    as_root "cat /w/backups/$(basename "$full")" | dc exec -T postgres-server pg_restore -U postgres -d zabbix_restore --exit-on-error &&
+    "$@" | dc exec -T postgres-server pg_restore -U postgres -d zabbix_restore --exit-on-error &&
     psql_pg "SELECT timescaledb_post_restore()" zabbix_restore >/dev/null
 }
-check "restore of $(basename "$full") succeeds" restore
-check "restored DB has the same items and hosts" [ "$(psql_pg 'SELECT (SELECT count(*) FROM items), (SELECT count(*) FROM hosts)' zabbix_restore)" = "$(psql_pg 'SELECT (SELECT count(*) FROM items), (SELECT count(*) FROM hosts)')" ]
-check "restored DB has history data and hypertables" [ "$(psql_pg "SELECT (SELECT count(*) FROM history_uint) > 0 AND (SELECT count(*) FROM timescaledb_information.hypertables) = 9" zabbix_restore)" = t ]
+same_items_and_hosts() {
+  local q="SELECT itemid || ' ' || flags || ' ' || key_ FROM items UNION ALL SELECT 'host ' || host FROM hosts ORDER BY 1"
+  diff <(psql_pg "$q" zabbix_restore) <(psql_pg "$q") | head -n 5
+}
+check "restore of $(basename "$full") succeeds" restore as_root "cat /w/backups/$(basename "$full")"
+check "restored DB has the same items and hosts" same_items_and_hosts
+check "restored DB has history data and hypertables" [ "$(psql_pg "SELECT (SELECT count(*) FROM history_uint) > 0 AND (SELECT count(*) FROM timescaledb_information.hypertables) = 10" zabbix_restore)" = t ]
 psql_pg "DROP DATABASE zabbix_restore" postgres
+
+echo "--- encrypted backups"
+dc run --rm -T --no-deps --entrypoint age-keygen zabbix-backup > age-key.txt 2>/dev/null
+pub=$(sed -n 's/^# public key: //p' age-key.txt)
+in_backup_container <<<'touch -d "2000-01-01 00:00:00" /backups/zabbix-20000101-000000.dump.age'
+check "on-demand encrypted no-history backup (age key + SSH key, padded and empty entries)" \
+  dc run --rm -T -e BACKUP_EXCLUDE_HISTORY=true -e BACKUP_AGE_RECIPIENTS=" $pub ,, $SSH_KEY , " zabbix-backup --once
+in_backup_container <<'EOF' | count_results "encrypted backup files"
+r() { if eval "$2" >/dev/null 2>&1; then echo "PASS: $1"; else echo "FAIL: $1"; fi; }
+enc=$(ls /backups/zabbix-*-nohistory.dump.age | tail -n 1)
+r "encrypted dump starts with the age header" '[ "$(head -c 21 "$enc")" = age-encryption.org/v1 ]'
+r "encrypted dump does not start with PGDMP" '[ "$(head -c 5 "$enc")" != PGDMP ]'
+r "encrypted dump has mode 600" '[ "$(stat -c %a "$enc")" = 600 ]'
+r "no .partial file left" '! ls /backups/*.partial'
+r "prune deleted the old .dump.age" '[ ! -e /backups/zabbix-20000101-000000.dump.age ]'
+EOF
+enc=$(in_backup_container <<<'ls /backups/zabbix-*-nohistory.dump.age | tail -n 1')
+decrypt() { dc run --rm -T --no-deps --entrypoint age zabbix-backup -d -i - "$1" < age-key.txt; }
+check "restore of encrypted $(basename "$enc") succeeds (README procedure: age in the backup image, key on stdin)" restore decrypt "$enc"
+check "DB restored from the encrypted dump has the same items and hosts" same_items_and_hosts
+psql_pg "DROP DATABASE zabbix_restore" postgres
+invalid_recipient_rejected() {
+  local out
+  ! out=$(dc run --rm -T --no-deps -e BACKUP_AGE_RECIPIENTS="$pub,age1bogus" zabbix-backup --once 2>&1) &&
+    grep -q 'BACKUP_AGE_RECIPIENTS must be' <<<"$out"
+}
+check "invalid BACKUP_AGE_RECIPIENTS stops the container with a clear message" invalid_recipient_rejected
+failed_dump_leaves_nothing() {
+  local before
+  before=$(in_backup_container <<<'ls -a /backups')
+  ! dc run --rm -T --no-deps -e PGHOST=nonexistent.invalid -e BACKUP_AGE_RECIPIENTS="$pub" zabbix-backup --once >/dev/null 2>&1 &&
+    [ "$before" = "$(in_backup_container <<<'ls -a /backups')" ]
+}
+check "failing pg_dump with encryption fails the backup and leaves no file" failed_dump_leaves_nothing
+check "backups/ still belongs to uid 70 with mode 0700" [ "$(as_root 'stat -c %u:%a backups')" = 70:700 ]
 
 echo "--- result"
 if [ "$FAILS" -eq 0 ]; then
