@@ -1,1108 +1,311 @@
-# Install Zabbix 7 + TimescaleDB monitoring server in docker
+# Zabbix 7.4 + TimescaleDB on Docker Compose
 
-### Greetings!
+A production-oriented Zabbix stack: PostgreSQL with TimescaleDB, Zabbix server, the web UI over HTTPS, an agent that monitors the Docker host, automatic first-run configuration, Telegram and per-environment Slack notifications, and nightly database backups.
 
-In this tutorial, we will deploy the popular **Zabbix** monitoring system using **TimescaleDB , a** **PostgreSQL** database plugin that allows you to effectively work with “time series”. We will wrap all this goodness inside docker containers 🐳. It will be interesting 😉.
+## What's in the stack
 
-> Please note that all actions described in this guide are done at your own risk and responsibility. My blog is just a platform where I talk about my experience and share my opinion on some things and phenomena. Thank you for understanding.
-> 
-> Ivan Cherniy
+| Service | Image | Purpose |
+| --- | --- | --- |
+| `postgres-server` | `timescale/timescaledb:2.29.2-pg18` | PostgreSQL 18 with TimescaleDB. Data lives in the named volume `pgdata`. |
+| `zabbix-server` | `zabbix/zabbix-server-pgsql` | Zabbix server. Creates the schema and TimescaleDB hypertables on first start and sets the `Admin` password. |
+| `zabbix-web` | `zabbix/zabbix-web-nginx-pgsql` | Web UI and API, served by the image's nginx over HTTPS on container port 8443. |
+| `zabbix-agent` | `zabbix/zabbix-agent2` | Agent 2 that monitors the Docker host as the host "Zabbix server". |
+| `zabbix-bootstrap` | `zabbix/zabbix-server-pgsql` | One-shot job that configures Zabbix through its API on every `docker compose up`. |
+| `zabbix-backup` | `timescale/timescaledb:2.29.2-pg18` | Nightly `pg_dump` of the Zabbix database into `./backups`. |
 
-- [Install Zabbix 7 + TimescaleDB monitoring server in docker](#install-zabbix-7--timescaledb-monitoring-server-in-docker)
-    - [Greetings!](#greetings)
-  - [Introduction](#introduction)
-  - [Preparation](#preparation)
-    - [Installing the necessary utilities](#installing-the-necessary-utilities)
-    - [Downloading project files](#downloading-project-files)
-    - [Creating a zabbix service user](#creating-a-zabbix-service-user)
-    - [Create a postgres service user](#create-a-postgres-service-user)
-  - [Creating a Password for a Postgres Database](#creating-a-password-for-a-postgres-database)
-  - [Running Zabbix stack with docker compose](#running-zabbix-stack-with-docker-compose)
-    - [Start the Postgres server](#start-the-postgres-server)
-    - [Starting Zabbix Server](#starting-zabbix-server)
-    - [Creating a Schema for TimescaleDB](#creating-a-schema-for-timescaledb)
-    - [Starting the whole stack TimesacleDB + Zabbix server + Zabbix web + Zabbix agent](#starting-the-whole-stack-timesacledb--zabbix-server--zabbix-web--zabbix-agent)
-  - [Access to Zabbix web interface](#access-to-zabbix-web-interface)
-  - [Optional](#optional)
-    - [Minimal initial setup of Zabbix server](#minimal-initial-setup-of-zabbix-server)
-    - [Setting up Zabbix stack autostart with systemd](#setting-up-zabbix-stack-autostart-with-systemd)
-    - [Installing and running Zabbix agent in docker on a remote host](#installing-and-running-zabbix-agent-in-docker-on-a-remote-host)
-    - [Setting up Zabbix notifications in Telegram with a schedule](#setting-up-zabbix-notifications-in-telegram-with-a-schedule)
-  - [Conclusion](#conclusion)
-  - [Materials used](#materials-used)
+The stack runs Zabbix 7.4 (7.4.15 at the time of writing) through the `alpine-7.4-latest` tags. Every image in `compose.yaml` is pinned by digest. Renovate opens pull requests for image rebuilds and 7.4.x patch releases; TimescaleDB updates are limited to the versions Zabbix 7.4 supports.
 
+The Nord theme from the original project is included and ported to 7.4. Each user can select it under User settings > Profile > Theme.
 
-## Introduction
+## Requirements
 
-**Zabbix** is ​​an open platform for monitoring networks and servers. It uses relational DBMS for data storage, such as PostgreSQL, MySQL, MariaDB, Oracle, SQLite, etc.
+- A Linux host with Docker Engine 25 or later and the Docker Compose plugin v2.24 or later.
+- About 2 GB of free RAM for a small installation. See [Sizing](#sizing-and-resource-limits).
+- Root access (sudo) to run `setup.sh`.
+- The Docker service enabled at boot (`systemctl enable --now docker`). The containers use `restart: unless-stopped`, so the stack starts again with the Docker daemon. No systemd unit is needed.
 
-**A time series in databases** is a set of data ordered by time, where values ​​are recorded at equal or unequal time intervals.
+## Quick start
 
-**Time series databases** are specialized databases designed for efficient storage, management, and analysis of time series. These are often **no sql** databases.
-
-**TimescaleDB (TSDB)** is an extension for PostgreSQL that optimizes work with time series in this DBMS, while maintaining all the power and flexibility of classic SQL-like databases. Since a certain time, Zabbix has learned to work with this DBMS.
-
-Quote from the official Zabbix documentation:
-
-> Zabbix supports TimescaleDB, a PostgreSQL-based database solution of automatically partitioning data into time-based chunks to support faster performance at scale.
-> 
-> Zabbix.com
-
-Please also pay attention to the warning from the official Zabbix documentation:
-
-> Warning: Currently, TimescaleDB is not supported by Zabbix proxy.
-> 
-> Zabbix.com 09.2024
-
-I'm sure this will be fixed in the future. But for now, enough chatter, let's get down to business🤵‍♂️.
-
-## Preparation
-
-We will deploy Zabbix in the **Debian 12 💿** [distribution](https://r4ven.me/it-razdel/slovarik/distributiv-linux/) environment with **the Docker engine** 🐳 installed. If you don’t have a ready-made Linux server yet, I recommend my previous articles:
-
-- [Installing Debian 12 Server in VirtualBox](https://r4ven.me/it-razdel/instrukcii/ustanovka-servera-debian-12-v-virtualbox/)
-- [Initial setup of Linux server using Debian as an example](https://r4ven.me/it-razdel/instrukcii/nachalnaya-nastrojka-linux-servera-na-primere-debian/)
-- [Installing Docker engine on a Linux server running Debian](https://r4ven.me/it-razdel/instrukcii/ustanovka-docker-engine-na-linux-server-pod-upravleniem-debian/)
-
-Also, for further work we will need a user with **root** rights .
-
-> Hey, this article is part of a series about building your own infrastructure. Previous articles:
-> 
-> - [Install OpenConnect SSL VPN server (ocserv) in docker for internal projects](https://r4ven.me/it-razdel/instrukcii/podnimaem-openconnect-ssl-vpn-server-ocserv-v-docker-dlya-vnutrennih-proektov/)
-> - [Install your own DNS server Unbound and ad blocker Pihole in docker](https://r4ven.me/it-razdel/instrukcii/podnimaem-svoj-dns-server-unbound-i-blokirovshhik-reklamy-pihole-v-docker/)
-> 
-> And here is the diagram, taking into account the addition of a monitoring server:
-> 
-> [![](https://r4ven.me/wp-content/uploads/2024/09/openconnect_zabbix.jpg)](https://r4ven.me/wp-content/uploads/2024/09/openconnect_zabbix.jpg)
-
-### Installing the necessary utilities
-
-Today we will need utilities for interaction with the web. Open the terminal and install the version control system `git`and the utility `curl`:
-
-```bash
-sudo apt update && sudo apt install -y git curl
+```sh
+sudo git clone https://github.com/r4ven-me/zabbix.git /opt/zabbix
+cd /opt/zabbix
+sudo cp .env.example .env
+sudo nano .env
+sudo ./setup.sh
+docker compose up -d
 ```
 
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-29.png)](https://r4ven.me/wp-content/uploads/2024/09/image-29.png)
+Set at least `ZBX_PUBLIC_URL` in `.env` before you run `setup.sh`, because the self-signed certificate is created for its host name. `setup.sh` creates `.env` from `.env.example` if it is missing, generates the database and Admin passwords, creates empty bot token files, creates a self-signed TLS certificate and the `backups` directory. It is safe to run again: it never overwrites an existing secret, it only fixes file permissions.
 
-### Downloading project files
+The first start creates the database schema, which takes one to a few minutes. `docker compose up -d` returns when the database, server and web UI are healthy and the bootstrap job has started. Check the bootstrap result with:
 
-All project files are in my [repository](https://r4ven.me/it-razdel/slovarik/repozitorij-programmnogo-obespecheniya/) on [GitHub](https://github.com/r4ven-me/zabbix) . Clone it using the previously installed utility `git`along the path `/opt/zabbix`:
-
-```bash
-sudo git clone https://github.com/r4ven-me/zabbix /opt/zabbix
+```sh
+docker compose logs zabbix-bootstrap
 ```
 
-<details>
+Open `ZBX_PUBLIC_URL` (by default `https://localhost:8443`) and log in as `Admin`. The password is in `secrets/zabbix_admin_password`:
 
-<summary>Click here to view the description of the project files</summary>
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-108.png)](https://r4ven.me/wp-content/uploads/2024/09/image-108.png)
-
-- `docker-compose.yml`– file describing services launched in docker containers:
-    - **The NETWORK** section defines two docker virtual networks:
-        - `zbx_net_backend`– an isolated network for interaction between containers `postgres-server,` `zabbix-server`, `zabbix-web`and `zabbix-agent`;
-        - `zbx_net_frontend`– network with access to containers from the host OS: for containers `zabbix-server`and `zabbix-web`.
-    - **The SERVICES** section defines the parameters of the services/containers being launched:
-        - `postgres-server`– TimescaleDB DBMS service;
-        - `zabbix-server`– Zabbix server service;
-        - `zabbix-web`– web interface service for Zabbix server (under the hood **nginx** + **php-fpm** );
-        - `zabbix-agent`– Zabbix agent service for collecting metrics from the Zabbix server itself.
-    - **The SECRETS** section defines files containing sensitive information that are dropped into containers `postgres-server`, `zabbix-server`and `zabbix-web`:
-        - `POSTGRES_USER`(file `./env/.POSTGRES_USER`) – user name for the Zabbix database in the TimescaleDB DBMS;
-        - `POSTGRES_PASSWORD`(file `./env/.POSTGRES_PASSWORD`) – respectively, the user password.
-- env – a directory with files containing environment variables, the values ​​of which are passed inside the container when it is launched:
-    - `.env_db`– parameters for `postgres-server`;
-    - `.env_srv`– parameters for `zabbix-server`;
-    - `.env_web`– parameters for `zabbix-web`;
-    - `.env_agent`– parameters for local `zabbix-agent`;
-    - `.POSTGRES_PASSWORD`– user password in the zabbix database;
-    - `.POSTGRES_USER`– user name in the zabbix database.
-- `src`– directory with source files for building a custom container `zabbix-server`with extended functionality:
-    - `alertscripts`– directory with files for sending notifications to Telegram:
-    - `docker-entrypoint.sh`– script for preparing the environment inside the container (not changed);
-    - `Dockerfile`– customized image build description file;
-    - `externalscripts`– a directory with a script for monitoring the delegated domain.
-
-</details>
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-30.png)](https://r4ven.me/wp-content/uploads/2024/09/image-30.png)
-
-If necessary, edit the block `deploy`for the required services in the file `docker-compose.yml`, depending on the server resources you have. By default, the minimum values ​​are used.
-
-### Creating a zabbix service user
-
-For security purposes, we create a group with limited rights and a service user to run zabbix containers:
-
-```bash
-sudo addgroup --system --gid 1995 zabbix
-
-sudo adduser --system --gecos "Zabbix monitoring system" \
-    --disabled-password --uid 1997 --ingroup zabbix  \
-    --shell /sbin/nologin --home /opt/zabbix/zabbix_data zabbix
+```sh
+sudo cat secrets/zabbix_admin_password
 ```
 
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-31.png)](https://r4ven.me/wp-content/uploads/2024/09/image-31.png)
+Your browser warns about the self-signed certificate until you replace it or trust it. See [TLS certificate](#tls-certificate).
 
-### Create a postgres service user
+## Configuration reference
 
-Now, in a similar way, we create a group and user to run the TimescaleDB container:
+### .env
 
-```bash
-sudo addgroup --system --gid 70 postgres
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ZBX_WEB_BIND` | `127.0.0.1` | Host address the HTTPS web UI is published on. Use `0.0.0.0` or a LAN address to reach it from other machines. |
+| `ZBX_WEB_PORT` | `8443` | Host port of the HTTPS web UI. |
+| `ZBX_SERVER_BIND` | `127.0.0.1` | Host address of the Zabbix server port (10051) for remote agents and proxies. |
+| `ZBX_SERVER_PORT` | `10051` | Host port of the Zabbix server. |
+| `ZBX_PUBLIC_URL` | `https://localhost:8443` | URL users open in the browser. It is set as the frontend URL, used in notification links and as the name in the self-signed certificate. |
+| `ZBX_SERVER_NAME` | `Zabbix` | Name shown in the title and header of the web UI. |
+| `TZ` | `UTC` | Time zone of all containers and of the web UI. Backups run at `BACKUP_HOUR` in this time zone. |
+| `TELEGRAM_CHAT_ID` | empty | Telegram chat that receives alerts. See [Telegram](#telegram). |
+| `SLACK_CHANNELS` | empty | Slack channel per environment, for example `prod:#alerts-prod,test:#alerts-test`. See [Slack](#slack). |
+| `BACKUP_HOUR` | `3` | Hour (0-23, local time) of the nightly backup. |
+| `BACKUP_KEEP_DAYS` | `7` | Backups older than this number of days are deleted. |
+| `BACKUP_EXCLUDE_HISTORY` | `false` | `true` leaves history and trends data out of the nightly backup. See [Backups](#backups). |
 
-sudo adduser --system --gecos "PostgreSQL database" \
-    --disabled-password --uid 70 --ingroup postgres  \
-    --shell /sbin/nologin --home /opt/zabbix/postgres_data postgres
-```
+After you change `.env`, run `docker compose up -d`. Compose recreates the affected containers and the bootstrap job applies the new notification settings.
 
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-32.png)](https://r4ven.me/wp-content/uploads/2024/09/image-32.png)
+### Secrets
 
-We check the presence of all necessary files and folders:
+Secrets live in files under `secrets/`, never in `.env` or in container environment variables. Containers receive only the files they need, mounted read-only.
 
-```bash
-ls -l /opt/zabbix
-```
+| File | Created by | Used by |
+| --- | --- | --- |
+| `secrets/postgres_password` | `setup.sh` | PostgreSQL superuser `postgres` (initialisation and maintenance only) |
+| `secrets/zabbix_db_password` | `setup.sh` | Database role `zabbix`: server, web UI, backups |
+| `secrets/zabbix_admin_password` | `setup.sh` | Web UI user `Admin`: set when `zabbix-server` creates the schema, used by the bootstrap job |
+| `secrets/telegram_bot_token` | you (empty by default) | Telegram media type |
+| `secrets/slack_bot_token` | you (empty by default) | Slack media type |
+| `secrets/tls/ssl.crt`, `secrets/tls/ssl.key` | `setup.sh` (self-signed) or you | nginx in `zabbix-web` |
 
-> [![](https://r4ven.me/wp-content/uploads/2024/09/image-33.png)](https://r4ven.me/wp-content/uploads/2024/09/image-33.png)
+`secrets/` is readable by root only. The files inside are mode 0444, because the containers run as non-root users (postgres uid 70, zabbix uid 1997) and Compose cannot change the owner of a file secret. After you edit or replace a file in `secrets/`, run `sudo ./setup.sh` again to restore the permissions, then `docker compose up -d --force-recreate <service>`.
 
-Great, let's move on 🚶.
+The database passwords are only read when the database is initialised. Changing `postgres_password` or `zabbix_db_password` later requires changing the role password in PostgreSQL as well (`ALTER ROLE ... PASSWORD`).
 
-## Creating a Password for a Postgres Database
+### Admin password
 
-By default, `/opt/zabbix/env/.POSTGRES_PASSWORD`I set the same password for the zabbix database in the file. But I highly recommend generating a new one, for example with this command:
+When `zabbix-server` creates the database schema on the first start, it sets the `Admin` password from `secrets/zabbix_admin_password` before the server and the web UI start. The default password `zabbix` never works. If the very first start is interrupted before that step, the bootstrap job finds the default password and replaces it with the one from the file. The bootstrap job logs in with the same file on every run. The file is only read at schema creation, so changing it later does not change the password.
 
-```bash
-tr -cd "[:alnum:]" < /dev/urandom | head -c 30 \
-    | sudo tee /opt/zabbix/env/.POSTGRES_PASSWORD
-```
+To rotate the Admin password, change it in the web UI and write the same password into `secrets/zabbix_admin_password` (`sudo nano secrets/zabbix_admin_password`, then `sudo ./setup.sh`). If the file does not match the UI password, the bootstrap job fails with the API error and a hint about the file, and the notification settings are not applied.
 
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-34.png)](https://r4ven.me/wp-content/uploads/2024/09/image-34.png)
+### TLS certificate
 
-> Ignore the character `%`at the end of my example line. This is a quirk of [the ZSH shell](https://r4ven.me/it-razdel/instrukcii/zsh-interaktivnaya-komandnaya-obolochka-dlya-linux-oh-my-zsh/) , which prints it (or `#`for root) when there is no newline character.
+`setup.sh` creates a self-signed certificate for the host name in `ZBX_PUBLIC_URL` (plus `localhost`), valid for 825 days. To use a real certificate:
 
-## Running Zabbix stack with docker compose
+1. Copy the full certificate chain to `secrets/tls/ssl.crt` and the private key to `secrets/tls/ssl.key`.
+2. Run `sudo ./setup.sh` to fix the permissions.
+3. Run `docker compose up -d --force-recreate zabbix-web`.
 
-### Start the Postgres server
+To create a new self-signed certificate, for example after changing `ZBX_PUBLIC_URL`, delete both files and run `sudo ./setup.sh`.
 
-First, we launch the DBMS server with the following command:
+The web image already sends HSTS (`max-age=63072000`) and a report-only Content Security Policy. Because of HSTS, browsers remember to use HTTPS for the host name; do not serve plain HTTP on the same name later.
 
-```bash
-sudo docker compose -f /opt/zabbix/docker-compose.yml up -d postgres-server
-```
+If you prefer a reverse proxy (for example with automatic Let's Encrypt certificates), keep `ZBX_WEB_BIND=127.0.0.1` and point the proxy at `https://127.0.0.1:8443`.
 
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-35.png)](https://r4ven.me/wp-content/uploads/2024/09/image-35.png)
+`config/nginx/dhparam.pem` is the standard RFC 7919 `ffdhe2048` group. It is public and needs no change.
 
-After loading the image and running the container, we look at its output:
+### Exposing the Zabbix server port
 
-```bash
-sudo docker logs -f postgres-server
-```
+Remote agents in active mode and Zabbix proxies connect to the server on port 10051. By default the port is published on `127.0.0.1` only. To accept remote connections, set `ZBX_SERVER_BIND=0.0.0.0` (or one host address) and run `docker compose up -d`.
 
-If launched successfully, you will see something like this:
+Docker writes its own firewall rules for published ports, and these bypass `ufw` and `firewalld` rules on many systems. Use the bind address to limit exposure, and restrict sources in the `DOCKER-USER` iptables chain or in an external firewall. Use PSK or certificate encryption for remote agents.
 
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-120-1500x181.png)](https://r4ven.me/wp-content/uploads/2024/09/image-120.png)
+### Sizing and resource limits
 
-At the first start, scripts for preparing the environment and basic DBMS configuration are executed inside the container depending on the server parameters. In one of my tests, such a script set the parameter `max_connections`equal `25`\- which is not enough even to import the zabbix DB schema and the process will fail with an error:
+Memory limits per container are set in `compose.yaml`:
 
-```bash
-FATAL:  sorry, too many clients already
-```
+| Service | Limit |
+| --- | --- |
+| `postgres-server` | 2 GB |
+| `zabbix-server` | 1 GB |
+| `zabbix-web` | 512 MB |
+| `zabbix-agent` | 256 MB |
+| `zabbix-backup` | 512 MB |
+| `zabbix-bootstrap` | 128 MB |
 
-You can check the value `max_connections`with this command:
-
-```bash
-sudo grep 'max_connections' /opt/zabbix/postgres_data/postgresql.conf
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-36.png)](https://r4ven.me/wp-content/uploads/2024/09/image-36.png)
-
-If you have `<=25`, then this parameter needs to be increased. Open the file for editing with any console editor, for example, [Vim/Neovim](https://r4ven.me/tag/vim-neovim/) 😎:
-
-```bash
-sudo vim /opt/zabbix/postgres_data/postgresql.conf
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-37.png)](https://r4ven.me/wp-content/uploads/2024/09/image-37.png)
-
-We find the line there:
-
-```plaintext
-max_connections = 25
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-38.png)](https://r4ven.me/wp-content/uploads/2024/09/image-38.png)
-
-And we change it, for example, to:
-
-```plaintext
-max_connections = 200
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-39.png)](https://r4ven.me/wp-content/uploads/2024/09/image-39.png)
-
-Save the file and exit the editor.
-
-To apply the changes, restart the container `postgres-server`and check the current value `max_connections`:
-
-```bash
-sudo docker compose -f /opt/zabbix/docker-compose.yml restart postgres-server
-
-sudo docker exec -it postgres-server psql -U zabbix -c "SHOW max_connections;"
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-40.png)](https://r4ven.me/wp-content/uploads/2024/09/image-40.png)
-
-Everything has been applied, let's move on to launching the container `zabbix-server`.
-
-### Starting Zabbix Server
-
-We launch it with the following command:
-
-```bash
-sudo docker compose -f /opt/zabbix/docker-compose.yml up -d zabbix-server
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-41.png)](https://r4ven.me/wp-content/uploads/2024/09/image-41.png)
-
-Let's look at the container output:
-
-```bash
-sudo docker logs -f zabbix-server
-```
-
-When you first run the container, it will start creating the database. This will take some time. The output will stop at this line:
-
-```plaintext
-Creating 'zabbix' schema in PostgreSQL
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-42.png)](https://r4ven.me/wp-content/uploads/2024/09/image-42.png)
-
-Be sure to wait until the database creation procedure is completed!
-
-If it runs successfully, you should see something like this:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-43.png)](https://r4ven.me/wp-content/uploads/2024/09/image-43.png)
-
-Perhaps at the very end there will be a conclusion similar to this:
-
-```plaintext
-256:20240922:121849.602 Zabbix agent item "system.cpu.util[,system]" on host "Zabbix server" failed: first network error, wait for 15 seconds
-225:20240922:121855.944 item "Zabbix server:zabbix[vmware,buffer,pused]" became not supported: No "vmware collector" processes started.
-225:20240922:121858.958 item "Zabbix server:zabbix[process,report writer,avg,busy]" became not supported: No "report writer" processes started.
-225:20240922:121859.962 item "Zabbix server:zabbix[process,report manager,avg,busy]" became not supported: No "report manager" processes started.
-256:20240922:121904.599 Zabbix agent item "system.users.num" on host "Zabbix server" failed: another network error, wait for 15 seconds
-256:20240922:121919.602 Zabbix agent item "system.cpu.load[all,avg5]" on host "Zabbix server" failed: another network error, wait for 15 seconds
-225:20240922:121928.010 item "Zabbix server:zabbix[connector_queue]" became not supported: connector is not initialized: please check "StartConnectors" configuration parameter
-225:20240922:121929.016 item "Zabbix server:zabbix[process,connector manager,avg,busy]" became not supported: No "connector manager" processes started.
-225:20240922:121930.021 item "Zabbix server:zabbix[process,connector worker,avg,busy]" became not supported: No "connector worker" processes started.
-256:20240922:121934.600 temporarily disabling Zabbix agent checks on host "Zabbix server": interface unavailable
-```
-
-We don't pay attention to him.
-
-Check the status of running containers:
-
-```bash
-sudo docker ps
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-44-1500x189.png)](https://r4ven.me/wp-content/uploads/2024/09/image-44.png)
-
-Everything is ok – let's move on.
-
-### Creating a Schema for TimescaleDB
-
-We output the password created earlier to the terminal, we will need it soon. Then we connect to the container shell `zabbix-server`:
-
-```bash
-sudo cat /opt/zabbix/env/.POSTGRES_PASSWORD
-
-sudo docker exec -it zabbix-server bash
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-45.png)](https://r4ven.me/wp-content/uploads/2024/09/image-45.png)
-
-Now we import the TimescaleDB schema using the SQL script that the Zabbix developers kindly put in the system files. When entering the import command, we will be asked for the DB password that we got in the previous step:
-
-```bash
-psql -h postgres-server -U zabbix zabbix < /usr/share/doc/zabbix-server-postgresql/timescaledb.sql
-```
-
-The import process is a simple redirection of the contents of the SQL script to the input of the database connection command using `psql`.
-
-The output should be:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-46.png)](https://r4ven.me/wp-content/uploads/2024/09/image-46.png)
-
-We exit the container `zabbix-server`and check for information about chunks in Postgres:
-
-```bash
-exit
-
-sudo docker exec -it postgres-server \
-    psql -U zabbix -c "SELECT * FROM chunks_detailed_size('history')"
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-47.png)](https://r4ven.me/wp-content/uploads/2024/09/image-47.png)
-
-If your output is the same as in the screenshot above, then everything was imported successfully 🥳.
-
-At this stage, the Postgres/TimesacleDB database and Zabbix server are ready 😉.
-
-### Starting the whole stack TimesacleDB + Zabbix server + Zabbix web + Zabbix agent
-
-We stop running containers and start the entire installation, including Zabbix web and Zabbix agent:
-
-```bash
-sudo docker compose -f /opt/zabbix/docker-compose.yml down
-
-sudo docker compose -f /opt/zabbix/docker-compose.yml up -d
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-48.png)](https://r4ven.me/wp-content/uploads/2024/09/image-48.png)
-
-Let's check if all containers started correctly:
-
-```bash
-sudo docker ps
-
-sudo docker compose -f /opt/zabbix/docker-compose.yml logs -f
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-49-1500x196.png)](https://r4ven.me/wp-content/uploads/2024/09/image-49.png)
-
-Great. Now let's check the operation of Zabbix itself:
-
-```bash
-curl -I http://localhost:8080
-
-nc -zv localhost 10051
-
-ss -tulnap | grep -E '8080|10051'
-```
-
-> With the first command we checked the availability of the web interface from the console, with the second – the availability of the port `zabbix-server`, and with the third we displayed the ports listened to by the host OS.
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-50.png)](https://r4ven.me/wp-content/uploads/2024/09/image-50.png)
-
-Great, everything works 🎉🎉🎉.
-
-## Access to Zabbix web interface
-
-The way to access the Zabbix web interface depends on the conditions in which you deployed the stack. I will describe several obvious options.
-
-_Click on the spoiler to view the instructions._
-
-<details>
-<summary>1) If Zabbix server is deployed on a local machine</summary>
-
-Just type the URL into your browser 😁😁😁:
-
-```bash
-http://127.0.0.1:8080/
-```
-</details>
-
-<details>
-<summary>2) If Zabbix server is deployed on a remote server that is located in a local or VPN network</summary>
-
-In this case, edit the network settings for services `zabbix-server`and `zabbix-web`in `docker-compose.yml`the file.
-
-For example, the internal address of my server in the VPN network is: `192.168.122.24`. I edit `docker-compose.yml`:
-
-```bash
-sudo vim /opt/zabbix/docker-compose.yml
-```
-
-zabbix-server:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-51.png)](https://r4ven.me/wp-content/uploads/2024/09/image-51.png)
-
-zabbix-web:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-52.png)](https://r4ven.me/wp-content/uploads/2024/09/image-52.png)
-
-I restart all containers:
-
-```bash
-sudo docker compose -f /opt/zabbix/docker-compose.yml down
-
-sudo docker compose -f /opt/zabbix/docker-compose.yml up -d
-
-sudo docker ps
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-53-1500x169.png)](https://r4ven.me/wp-content/uploads/2024/09/image-53.png)
-
-On the client connected to the VPN network, I open the following URL in the browser:
-
-```bash
-http://192.168.122.24:8080/
-```
-</details>
-
-<details>
-<summary>3) If Zabbix server is deployed on a remote server and is not connected to a local or VPN network</summary>
-
-In this case, you can forward an SSH port or open access directly or through a reverse proxy, like **nginx** . I will consider only the first case, as the simplest. And also because the other two are beyond the scope of this article 😜.
-
-On the client, open the terminal and execute:
-
-```bash
-ssh -L 8080:127.0.0.1:8080 user@example.com
-```
-
-Where (in order):
-
-- `-L` – local port forwarding key;
-- `8080` – the port that the client machine will listen to and redirect it to `8080`the server port;
-- `127.0.0.1` – the address of the server on which it listens to the port;
-- `8080` – accordingly the port to which we are redirecting;
-- `user@example.com` – user and SSH server address.
-
-In my example the command is:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-56.png)](https://r4ven.me/wp-content/uploads/2024/09/image-56.png)
-
-Now open the browser and go to the address: `http://127.0.0.1:8080/`
-
-Access to the web interface will be available as long as the SSH session is open.
-</details>
-
-To log in to the web interface, use the standard login: `Admin`and password:`zabbix`
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-54-1500x927.png)](https://r4ven.me/wp-content/uploads/2024/09/image-54.png)
-
-If you saw this:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-55-1500x930.png)](https://r4ven.me/wp-content/uploads/2024/09/image-55.png)
-
-Congratulations 😎! Zabbix server with TimescaleDB is up and running 👷‍♂️.
-
-## Optional
-
-Below are some optional but recommended steps of the instructions 😉.
-
-### Minimal initial setup of Zabbix server
-
-<details>
-<summary>Click on the spoiler</summary>
-
-I won't go into too much detail about Zabbix settings, as this is a topic for more than one article 🤯. I'll just show you how to change the interface language, create a new user with admin rights, disable the standard Admin and configure a local Zabbix agent to monitor the Zabbix server itself.
-
-All actions are shown in pictures and do not really need any comments 😏.
-
-**Change language**
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-57.png)](https://r4ven.me/wp-content/uploads/2024/09/image-57.png)
-
-**Create a new user**
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-58-1500x638.png)](https://r4ven.me/wp-content/uploads/2024/09/image-58.png)
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-59.png)](https://r4ven.me/wp-content/uploads/2024/09/image-59.png)
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-60.png)](https://r4ven.me/wp-content/uploads/2024/09/image-60.png)
-
-![](https://r4ven.me/wp-content/uploads/2024/09/image-61.png)
-
-And we re-enter the interface under the new user:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-62.png)](https://r4ven.me/wp-content/uploads/2024/09/image-62.png)
-
-**Disabling the standard Admin user**
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-63.png)](https://r4ven.me/wp-content/uploads/2024/09/image-63.png)
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-64.png)](https://r4ven.me/wp-content/uploads/2024/09/image-64.png)
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-65.png)](https://r4ven.me/wp-content/uploads/2024/09/image-65.png)
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-66.png)](https://r4ven.me/wp-content/uploads/2024/09/image-66.png)
-
-**Connecting a local Zabbix agent**
-
-This agent was raised by us at the moment of launching the entire installation and is accessible by domain name `zabbix-agent`within the container network.
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-67.png)](https://r4ven.me/wp-content/uploads/2024/09/image-67.png)
-
-Here we must select “Connect via” – **DNS** :
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-68.png)](https://r4ven.me/wp-content/uploads/2024/09/image-68.png)
-
-Now we go to the page “Monitoring” – “Problems”. In a few minutes the problem with local availability `zabbix-agent`should be solved:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-69.png)](https://r4ven.me/wp-content/uploads/2024/09/image-69.png)
-
-</details>
-
-### Setting up Zabbix stack autostart with systemd
-
-<details>
-<summary>Click on the spoiler</summary>
-
-At the beginning of the article, we created a service user zabbix. We use it to securely run Zabbix stack services.
-
-**Setting up sudoers to run Zabbix as a service user**
-
-> Recently I have been examining the intricacies of the privilege escalation mechanism in Linux. For a better understanding of further actions I recommend reading: [Linux command line, privilege escalation: su, sudo commands](https://r4ven.me/it-razdel/zametki/komandnaya-stroka-linux-povyshenie-privilegij-komandy-su-sudo/) 😌.
-
-Create a new file with a description of limited permissions for the zabbix user:
-
-```bash
-sudo visudo -f /etc/sudoers.d/zabbix
-```
-
-And fill it with the following:
-
-```bash
-Cmnd_Alias ZBX = \
-    /usr/bin/docker compose -f /opt/zabbix/docker-compose.yml up, \
-    /usr/bin/docker compose -f /opt/zabbix/docker-compose.yml down
-
-zabbix ALL = (:docker) NOPASSWD: ZBX
-```
-
-> **We allow the zabbix** user to start and stop the services described in our , on behalf of the privileged **docker**`docker-compose.yml` group using .`sudo`
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-70.png)](https://r4ven.me/wp-content/uploads/2024/09/image-70.png)
-
-Save the file and close the editor.
-
-**Creating a systemd service file**
-
-Open for editing:
-
-```bash
-sudo vim /etc/systemd/system/zabbix.service
-```
-
-And we fill it:
-
-```ini
-[Unit]
-Description=Zabbix service
-Requires=docker.service
-After=docker.service
-
-[Service]
-Restart=always
-RestartSec=5
-User=zabbix
-ExecStart=/usr/bin/sudo --group=docker /usr/bin/docker compose -f /opt/zabbix/docker-compose.yml up
-ExecStop=/usr/bin/sudo --group=docker /usr/bin/docker compose -f /opt/zabbix/docker-compose.yml down
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Save, close. After that, stop the running containers, reread the systemd configuration, activate the autostart of the zabbix service and start it:
-
-```bash
-sudo docker compose -f /opt/zabbix/docker-compose.yml down
-
-sudo systemctl enable --now zabbix
-
-sudo systemctl status zabbix
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-71.png)](https://r4ven.me/wp-content/uploads/2024/09/image-71.png)
-
-Checking the status of containers:
-
-```bash
-sudo docker ps
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-49-1500x196.png)](https://r4ven.me/wp-content/uploads/2024/09/image-49.png)
-
-Everything is running. That's great 🙂.
-
-</details>
-
-### Installing and running Zabbix agent in docker on a remote host
-
-<details>
-<summary>Click on the spoiler</summary>
-
-Since we deployed Zabbix in Docker, the logical step would be to launch Zabbix agents in a similar way.
-
-> Obviously, this requires [the Docker engine](https://r4ven.me/it-razdel/instrukcii/ustanovka-docker-engine-na-linux-server-pod-upravleniem-debian/) to be installed and running .
-
-**Downloading project files and creating a service user**
-
-Clone the repository with files:
-
-```bash
-sudo git clone https://github.com/r4ven-me/zabbix-agent /opt/zabbix-agent
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-72.png)](https://r4ven.me/wp-content/uploads/2024/09/image-72.png)
-
-As in the case of the server, we create a service user to run the Zabbix agent:
-
-```bash
-sudo addgroup --system --gid 1995 zabbix
-
-sudo adduser --system --gecos "Zabbix agent" \
-    --disabled-password --uid 1997 --ingroup zabbix  \
-    --shell /sbin/nologin --home /opt/zabbix-agent/data zabbix
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-76.png)](https://r4ven.me/wp-content/uploads/2024/09/image-76.png)
-
-We correct `.env`the file – the file with Zabbix agent parameters.
-
-```bash
-sudo vim /opt/zabbix-agent/.env
-```
-
-Here we must specify the existing IP address of the host on which the Zabbix agent service will wait for connections. We also specify the agent hostname and the Zabbix server address.
-
-In my example the data is:
-
-- Zabbix server address:`192.168.122.24`
-- Zabbix agent address:`192.168.122.105`
-- Zabbix agent hostname:`zabbix-agent.example.com`
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-73.png)](https://r4ven.me/wp-content/uploads/2024/09/image-73.png)
-
-Description of all parameters [can be found here](https://registry.hub.docker.com/r/zabbix/zabbix-agent/) .
-
-Now, just in case, we check the finished sudoers file and if everything is ok, we copy it to `/etc/sudoers.d/`:
-
-```bash
-sudo visudo -c -f /opt/zabbix-agent/zabbix_agent
-
-sudo cp /opt/zabbix-agent/zabbix_agent /etc/sudoers.d/
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-74.png)](https://r4ven.me/wp-content/uploads/2024/09/image-74.png)
-
-Next, we copy the systemd service file, reread the configuration and run it `zabbix-agent`:
-
-```bash
-sudo cp /opt/zabbix-agent/zabbix-agent.service /etc/systemd/system/
-
-sudo systemctl daemon-reload
-
-sudo systemctl enable --now zabbix-agent
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-75.png)](https://r4ven.me/wp-content/uploads/2024/09/image-75.png)
-
-Please note that when you first run docker, it will download the image from the registry.
-
-You can check the agent status with the following commands:
-
-```bash
-sudo systemctl status zabbix-agent
-
-sudo journalctl -fu zabbix-agent
-
-sudo docker ps
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-77-1500x664.png)](https://r4ven.me/wp-content/uploads/2024/09/image-77.png)
-
-Zabbix agent is running.
-
-Nuance. If you have many external partitions mounted on your server, you need to add them to the block `volume`in `docker-compose.yml`order for the Zabbix agent to detect them.
-
-**Adding Zabbix Agent to Zabbix Server**
-
-Almost everything is in pictures here 😇.
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-78-1500x542.png)](https://r4ven.me/wp-content/uploads/2024/09/image-78.png)
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-79.png)](https://r4ven.me/wp-content/uploads/2024/09/image-79.png)
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-80.png)](https://r4ven.me/wp-content/uploads/2024/09/image-80.png)
-
-Go to “Monitoring” – “Network nodes” and after a while:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-81.png)](https://r4ven.me/wp-content/uploads/2024/09/image-81.png)
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-82.png)](https://r4ven.me/wp-content/uploads/2024/09/image-82.png)
-
-Hooray!🥳🥳🥳
-
-</details>
-
-### Setting up Zabbix notifications in Telegram with a schedule
-
-<details>
-<summary>Click on the spoiler</summary>
-
-And now the interesting part 🧐. To implement the ability to send emergency notifications to Telegram with graphs, I rebuilt the container `zabbix-server`, adding a **Python** interpreter , a special **venv** and files from [the GitHub](https://github.com/xxsokolov/Zabbix-Notification-Telegram) repository of the developer **xxsokolov** - this method is marked on [the official Zabbix website](https://www.zabbix.com/ru/integrations/telegram#3rd_party) as valid 👌.
-
-In the instructions below, the option of using my image is considered: [r4venme/zabbix-server-pgsql:alpine-7.0.3](https://hub.docker.com/repository/docker/r4venme/zabbix-server-pgsql/general) , but you can also build your own. You will find all the files for the build in the downloaded repository from the beginning of the article, in the folder `src`.
-
-Let's start setting up.
-
-**Creating an Alert Type (Web Interface)**
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-93.png)](https://r4ven.me/wp-content/uploads/2024/09/image-93.png)
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-94.png)](https://r4ven.me/wp-content/uploads/2024/09/image-94.png)
-
-- Name (optional):`Alerter`
-- Type:`Скрипт`
-- Script name:`zbxTelegram.py`
-- Script parameters:
-    - `{ALERT.SENDTO}`
-    - `{ALERT.SUBJECT}`
-    - `{ALERT.MESSAGE}`
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-95.png)](https://r4ven.me/wp-content/uploads/2024/09/image-95.png)
-
-Next, go to the templates tab and add 2 pieces: for problems and for recovery:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-96.png)](https://r4ven.me/wp-content/uploads/2024/09/image-96.png)
-
-Template for problems:
-
-- Message Type: Problem
-- Subject:`{Problem} Problem ({TRIGGER.SEVERITY})`
-- Message:
-
-```xml
-<?xml version="1.0" encoding="UTF-8" ?>
-<root>
-    <body>
-        <messages>
-<![CDATA[
-Problem: {EVENT.NAME}
-
-Host: {HOST.NAME} ({HOST.IP})
-Start at: {EVENT.TIME} {EVENT.DATE}
-
-Last value: {ITEM.LASTVALUE1}
-
-###########################
-]]>
-        </messages>
-    </body>
-    <settings>
-        <graphs>True</graphs>
-        <hostlinks>True</hostlinks>
-        <graphlinks>False</graphlinks>
-        <acklinks>True</acklinks>
-        <eventlinks>True</eventlinks>
-        <triggerlinks>True</triggerlinks>
-        <eventtag>False</eventtag>
-        <eventidtag>False</eventidtag>
-        <itemidtag>False</itemidtag>
-        <triggeridtag>False</triggeridtag>
-        <actionidtag>False</actionidtag>
-        <hostidtag>False</hostidtag>
-        <zntsettingstag>True</zntsettingstag>
-        <zntmentions>True</zntmentions>
-        <keyboard>True</keyboard>
-        <graphs_period>default</graphs_period>
-        <host>{HOST.HOST}</host>
-        <itemid>{ITEM.ID1} {ITEM.ID2} {ITEM.ID3} {ITEM.ID4}</itemid>
-        <triggerid>{TRIGGER.ID}</triggerid>
-        <eventid>{EVENT.ID}</eventid>
-        <actionid>{ACTION.ID}</actionid>
-        <hostid>{HOST.ID}</hostid>
-        <title><![CDATA[{HOST.NAME} - {EVENT.NAME}]]></title>
-        <triggerurl><![CDATA[{TRIGGER.URL}]]></triggerurl>
-        <eventtags><![CDATA[{EVENT.TAGS}]]></eventtags>
-    </settings>
-</root>
-```
-
-After filling in, click “Add”:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-97.png)](https://r4ven.me/wp-content/uploads/2024/09/image-97.png)
-
-Then again “Add” the following:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-98.png)](https://r4ven.me/wp-content/uploads/2024/09/image-98.png)
-
-Recovery template:
-
-- Message Type: Problem Recovery
-- Subject:`{Resolved} Recovery`
-- Message:
-
-```xml
-<?xml version="1.0" encoding="UTF-8" ?>
-<root>
-    <body>
-        <messages>
-<![CDATA[
-Problem: {EVENT.RECOVERY.NAME}
-
-Host: {HOST.NAME} ({HOST.IP})
-Duration: {EVENT.DURATION} 
-Recovery time: {EVENT.RECOVERY.TIME} {EVENT.RECOVERY.DATE}
-
-Last value: {ITEM.LASTVALUE1}
-
-###########################
-]]>
-        </messages>
-    </body>
-    <settings>
-        <graphs>True</graphs>
-        <hostlinks>True</hostlinks>
-        <graphlinks>False</graphlinks>
-        <acklinks>True</acklinks>
-        <eventlinks>True</eventlinks>
-        <triggerlinks>True</triggerlinks>
-        <eventtag>False</eventtag>
-        <eventidtag>False</eventidtag>
-        <itemidtag>False</itemidtag>
-        <triggeridtag>False</triggeridtag>
-        <actionidtag>False</actionidtag>
-        <hostidtag>False</hostidtag>
-        <zntsettingstag>True</zntsettingstag>
-        <zntmentions>True</zntmentions>
-        <keyboard>True</keyboard>
-        <graphs_period>default</graphs_period>
-        <host>{HOST.HOST}</host>
-        <itemid>{ITEM.ID1} {ITEM.ID2} {ITEM.ID3} {ITEM.ID4}</itemid>
-        <triggerid>{TRIGGER.ID}</triggerid>
-        <eventid>{EVENT.ID}</eventid>
-        <actionid>{ACTION.ID}</actionid>
-        <hostid>{HOST.ID}</hostid>
-        <title><![CDATA[{HOST.NAME} - {EVENT.NAME}]]></title>
-        <triggerurl><![CDATA[{TRIGGER.URL}]]></triggerurl>
-        <eventtags><![CDATA[{EVENT.TAGS}]]></eventtags>
-    </settings>
-</root>
-```
-
-Next “Add”:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-99.png)](https://r4ven.me/wp-content/uploads/2024/09/image-99.png)
-
-And finally, here again:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-100.png)](https://r4ven.me/wp-content/uploads/2024/09/image-100.png)
-
-It should look like this:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-101.png)](https://r4ven.me/wp-content/uploads/2024/09/image-101.png)
-
-**Creating a service user (web interface)**
-
-Now let's create a service user for sending notifications:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-92.png)](https://r4ven.me/wp-content/uploads/2024/09/image-92.png)
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-91.png)](https://r4ven.me/wp-content/uploads/2024/09/image-91.png)
-
-Fill in all the required fields:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-102.png)](https://r4ven.me/wp-content/uploads/2024/09/image-102.png)
-
-> The background of the graphs in notifications depends on the theme you choose.
-
-After that, go to the “Notifications” tab and in the “Send to” field, specify the Telegram ID of the chat or group ( [instructions from the official Zabbix website on how to get the ID](https://www.zabbix.com/ru/integrations/telegram) ):
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-103.png)](https://r4ven.me/wp-content/uploads/2024/09/image-103.png)
-
-Next, go to “Access Rights”. Here, in a good way, you first need to set up limited groups and user roles. But this is a delicate process, and it is also beyond the scope of the article. For a quick solution, I give the service user “superadmin” rights, since the script requires read rights for network nodes and templates to work. This is up to you.
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-104.png)](https://r4ven.me/wp-content/uploads/2024/09/image-104.png)
-
-And at the end, click on the main “Add”:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-105.png)](https://r4ven.me/wp-content/uploads/2024/09/image-105.png)
-
-**Setting up notification conditions (web interface)**
-
-Go to “Trigger Actions” and create a new one:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-109.png)](https://r4ven.me/wp-content/uploads/2024/09/image-109.png)
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-110.png)](https://r4ven.me/wp-content/uploads/2024/09/image-110.png)
-
-We set the name and add the condition. In the condition we specify 2 templates, as in the screenshot:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-111.png)](https://r4ven.me/wp-content/uploads/2024/09/image-111.png)
-
-Next, go to the “Operations” tab and add 2 actions there: for “Operations” and “Recovery operations”:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-121.png)](https://r4ven.me/wp-content/uploads/2024/09/image-121.png)
-
-We specify the recipient - our service user, who registered the group/chat ID in the telegram. Here we also specify the sending method: the one we created earlier:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-113.png)](https://r4ven.me/wp-content/uploads/2024/09/image-113.png)
-
-Something like this:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-114.png)](https://r4ven.me/wp-content/uploads/2024/09/image-114.png)
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-115-1500x145.png)](https://r4ven.me/wp-content/uploads/2024/09/image-115.png)
-
-**Editing docker-compose.yml (server console)**
-
-We return to the server and open it for editing:
-
-```bash
-sudo vim /opt/zabbix/docker-compose.yml
-```
-
-We edit the service `zabbix-server`, block `image`. We comment the current line, and uncomment the line with the address of the image I have assembled:
+To change them, create `compose.override.yaml` next to `compose.yaml`; Compose reads it automatically:
 
 ```yaml
-# image: zabbix/zabbix-server-pgsql:alpine-7.0.3
-image: r4venme/zabbix-server-pgsql:alpine-7.0.3
+services:
+  postgres-server:
+    deploy:
+      resources:
+        limits:
+          memory: 8g
+  zabbix-server:
+    environment:
+      ZBX_CACHESIZE: 256M
+      ZBX_STARTPOLLERS: "10"
 ```
 
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-83.png)](https://r4ven.me/wp-content/uploads/2024/09/image-83.png)
+The TimescaleDB image tunes PostgreSQL (`shared_buffers`, `work_mem`, `max_connections=200` and others) from the memory limit only once, when the database is initialised. To re-tune after changing the limit:
 
-Save and restart `zabbix-server`:
-
-```bash
-sudo systemctl restart zabbix
-
-sudo journalctl -fu zabbix
-
-sudo docker ps
+```sh
+docker compose exec postgres-server timescaledb-tune --yes --quiet \
+  --memory=8GB --max-conns=200 --conf-path=/var/lib/postgresql/18/docker/postgresql.conf
+docker compose restart postgres-server
 ```
 
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-85-1500x305.png)](https://r4ven.me/wp-content/uploads/2024/09/image-85.png)
+Zabbix server settings are set with `ZBX_*` environment variables, as described in the documentation of the `zabbix/zabbix-server-pgsql` image.
 
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-86-1500x179.png)](https://r4ven.me/wp-content/uploads/2024/09/image-86.png)
+## Notifications
 
-`zabbix-server`After launching, we create a folder of alarm scripts, copy the config file of the script for sending notifications to the telegram from the docker container and change its owner:
+The bootstrap job configures notifications on every `docker compose up`.
 
-```bash
-sudo mkdir -p /opt/zabbix/zabbix_data/server/alertscripts/
+### Telegram
 
-sudo docker cp zabbix-server:/usr/lib/zabbix/alertscripts/zbxTelegram_config.py \
-    /opt/zabbix/zabbix_data/server/alertscripts/
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy the token.
+2. Add the bot to the chat or group that should receive alerts and find the chat id (for example with the `getUpdates` method of the Bot API). Group ids are negative numbers.
+3. Write the token into `secrets/telegram_bot_token` (`sudo nano secrets/telegram_bot_token`).
+4. Set `TELEGRAM_CHAT_ID` in `.env`.
+5. Run `sudo ./setup.sh`, then `docker compose up -d`.
 
-sudo chown -R zabbix:zabbix /opt/zabbix/zabbix_data/server/alertscripts/
+The bootstrap job sets the token on the built-in "Telegram" media type and enables it, gives the `Admin` user a Telegram media entry for the chat, and enables the default action "Report problems to Zabbix administrators". That action notifies the "Zabbix administrators" group, which contains `Admin`, about every problem. Telegram stays untouched while the token or `TELEGRAM_CHAT_ID` is empty.
+
+The bootstrap job manages the Telegram media of `Admin`: on every run it keeps one Telegram entry for `TELEGRAM_CHAT_ID` and removes all other Telegram entries of `Admin`. To notify more chats, give another user its own Telegram media.
+
+### Slack
+
+One Zabbix instance can send problems of different environments to different Slack channels. The environment of a problem comes from the event tag `env`.
+
+1. Create a Slack app with a bot token (`xoxb-...`). The built-in Zabbix Slack media type expects the scopes `chat:write`, `im:write`, `groups:write` and `reactions:write`.
+2. Invite the bot to every target channel (`/invite @your-bot`).
+3. Write the token into `secrets/slack_bot_token`.
+4. Set `SLACK_CHANNELS` in `.env`, for example `SLACK_CHANNELS=prod:#alerts-prod,test:#alerts-test`. Environment names may contain letters, digits, `_` and `-`.
+5. Run `sudo ./setup.sh`, then `docker compose up -d`.
+6. Tag your hosts (or their templates) with `env=prod` or `env=test`. Host and template tags are copied to the problem events. Problems without an `env` tag are not sent to Slack.
+
+For each environment the bootstrap job creates:
+
+- a user `slack-<env>` with a Slack media entry for the channel and a random password that is not stored anywhere;
+- an action `Slack: env=<env>` that sends problems with the tag `env=<env>` to that user, and also notifies about recoveries and updates.
+
+The `slack-<env>` users have the role "Slack notifications", which is of type Super admin so that the users can see every host and no alert is dropped because of missing permissions. The role has API access and all optional UI sections disabled; Zabbix requires one UI section to stay enabled, so "Monitoring > Problems" is left on. The users are members of the group "Slack notifications", which has no frontend access, so nobody can log in as these users.
+
+To add an environment, append it to `SLACK_CHANNELS` and run `docker compose up -d`. To change a channel, edit it the same way. When you remove an environment from `SLACK_CHANNELS`, or empty the variable, the action of each removed environment is disabled, not deleted. This also happens while `secrets/slack_bot_token` is empty; new environments are only set up when the token is set.
+
+## Operations
+
+### Status and logs
+
+```sh
+docker compose ps
+docker compose logs -f zabbix-server
+docker compose logs zabbix-bootstrap
 ```
 
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-87.png)](https://r4ven.me/wp-content/uploads/2024/09/image-87.png)
+Logs use the `json-file` driver with rotation (5 files of 10 MB per container).
 
-Reopening `docker-compose.yml`:
+To run the bootstrap job without restarting anything: `docker compose up -d zabbix-bootstrap` or `docker compose run --rm zabbix-bootstrap`.
 
-```bash
-sudo vim /opt/zabbix/docker-compose.yml
+### Upgrades
+
+Back up before every upgrade.
+
+Patch releases and image rebuilds (7.4.x): merge the Renovate pull request, or update the digests in `compose.yaml` yourself, then:
+
+```sh
+docker compose pull
+docker compose up -d
 ```
 
-For the service `zabbix-server`and in the block, `volume`uncomment the following line:
+The Zabbix server upgrades the database schema itself when it starts with a newer version.
 
-```yaml
-- ./zabbix_data/server/alertscripts/zbxTelegram_config.py:/usr/lib/zabbix/alertscripts/zbxTelegram_config.py
+Zabbix 8.0 (next LTS): read the Zabbix upgrade notes first. In `compose.yaml`, change all four Zabbix image lines (`zabbix-server`, `zabbix-web`, `zabbix-agent` and `zabbix-bootstrap`) to the 8.0 tag and its digest. Check which TimescaleDB versions Zabbix 8.0 supports, and change `allowedVersions` of the TimescaleDB rule in `renovate.json` to that range. Check that `theme/APP.php` still matches the `APP.php` of the new web image, and regenerate the Nord stylesheet with `theme/build.sh`, which reads the web image from `compose.yaml`. Then pull and start as above.
+
+TimescaleDB: never move to a TimescaleDB version that your Zabbix version does not support. Zabbix 7.4 supports TimescaleDB 2.13 to 2.29 and refuses to start with 2.30 or later. To change the TimescaleDB image, stop the database clients, start the new image, update the extension as the `postgres` superuser in every database that has it (the `zabbix` role does not own the extension), then start the rest of the stack:
+
+```sh
+docker compose stop zabbix-server zabbix-web zabbix-backup
+docker compose pull postgres-server
+docker compose up -d postgres-server
+for db in zabbix postgres template1; do
+  docker compose exec -T postgres-server psql -U postgres -d "$db" -X -c 'ALTER EXTENSION timescaledb UPDATE'
+done
+docker compose up -d
 ```
 
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-84.png)](https://r4ven.me/wp-content/uploads/2024/09/image-84.png)
+PostgreSQL major versions (18 to 19) need a dump and restore into a new volume; see [Restore](#restore).
 
-Don't forget to save.
+### Backups
 
-**Sending settings (server console)**
+`zabbix-backup` writes a full `pg_dump -Fc` dump every night at `BACKUP_HOUR` (local time in `TZ`) to `./backups/zabbix-YYYYMMDD-HHMMSS.dump`, and deletes dumps older than `BACKUP_KEEP_DAYS`. The backup runs as the `zabbix` database role. `./backups` belongs to the postgres container user (uid 70) with mode 0700, so on the host only root can read it. The dumps contain secrets: the Telegram and Slack bot tokens and the password hashes of all users. Protect every copy the same way, and encrypt dumps before you store them on another machine.
 
-There's just a little bit left 🥺.
+With `BACKUP_EXCLUDE_HISTORY=true` the dumps (named `...-nohistory.dump`) contain the full schema and configuration but no data of the history and trends tables, including their compressed TimescaleDB chunks. Such dumps are much smaller; a restore from them starts with empty graphs.
 
-Open the copied config file for editing:
+Run a backup now:
 
-```bash
-sudo vim /opt/zabbix/zabbix_data/server/alertscripts/zbxTelegram_config.py
+```sh
+docker compose run --rm zabbix-backup --once
+docker compose run --rm -e BACKUP_EXCLUDE_HISTORY=true zabbix-backup --once
 ```
 
-And we specify the token of our bot ( [how to get it](https://www.zabbix.com/ru/integrations/telegram) ) in the line `tg_token`inside single quotes:
+If a nightly backup fails, `zabbix-backup` is reported as unhealthy in `docker compose ps` until the next successful run. The result is kept in `backups/.status`, so a restart of the container does not clear it. Copy `./backups` to another machine regularly; a backup on the same disk does not protect against disk loss.
 
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-89.png)](https://r4ven.me/wp-content/uploads/2024/09/image-89.png)
+`pg_dump` prints a warning about circular foreign-key constraints on `continuous_agg`. It comes from the TimescaleDB catalog and does not affect the restore.
 
-Scroll down the file and also specify the service user and password that we created earlier:
+### Restore
 
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-90.png)](https://r4ven.me/wp-content/uploads/2024/09/image-90.png)
+Run these commands as root in `/opt/zabbix`. The restore needs the `postgres` superuser and the same TimescaleDB version that wrote the dump. Replace the file name with your dump.
 
-> `zabbix_api_url`– this is the internal network address of the container. Do not touch it if you have not changed it.
-
-Recreate the container `zabbix-server`:
-
-```bash
-sudo docker compose -f /opt/zabbix/docker-compose.yml down zabbix-server
-
-sudo docker compose -f /opt/zabbix/docker-compose.yml up -d zabbix-server
+```sh
+docker compose stop zabbix-server zabbix-web zabbix-backup
+docker compose exec -T postgres-server psql -U postgres -c 'DROP DATABASE zabbix WITH (FORCE)'
+docker compose exec -T postgres-server psql -U postgres -c 'CREATE DATABASE zabbix OWNER zabbix'
+docker compose exec -T postgres-server psql -U postgres -d zabbix -c 'SELECT timescaledb_pre_restore()'
+docker compose exec -T postgres-server pg_restore -U postgres -d zabbix --exit-on-error < backups/zabbix-YYYYMMDD-HHMMSS.dump
+docker compose exec -T postgres-server psql -U postgres -d zabbix -c 'SELECT timescaledb_post_restore()'
+docker compose up -d
 ```
 
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-119.png)](https://r4ven.me/wp-content/uploads/2024/09/image-119.png)
+To test a dump without touching the live database, use another database name (for example `zabbix_restore`) in the `CREATE DATABASE`, `pg_restore` and `psql` commands and skip the first two lines; drop it afterwards.
 
-**Check (server console)**
+To move to a new host, copy `.env` and `secrets/` from the old host (so that the passwords match the dump), run `sudo ./setup.sh` there to fix the permissions, start only `postgres-server` (`docker compose up -d postgres-server`), and follow the steps above.
 
-We check sending messages in the command line:
+## Security notes
 
-```bash
-sudo docker exec -it zabbix-server \
-    /usr/lib/zabbix/alertscripts/zbxTelegram.py 1234567890 test test
+What the stack does by default:
+
+- The web UI is served over HTTPS only. Plain HTTP (container port 8080) is never published; it is used inside the stack for the health check and by the bootstrap job over the internal network. Server version headers are disabled.
+- The web UI and the server port are published on `127.0.0.1` unless you change the bind addresses. PostgreSQL is never published.
+- The `backend` network is internal (no internet access). PostgreSQL, the agent, the bootstrap job and the backup job are only on this network. `zabbix-server` and `zabbix-web` are also on the `frontend` network: the server needs internet access for Telegram and Slack webhooks and remote agents, and the web UI must be published.
+- Zabbix connects to PostgreSQL as the role `zabbix`, which owns the database but is not a superuser. The superuser `postgres` is only used to initialise the database and for maintenance (restore, extension updates).
+- Secrets are files in a root-only directory, mounted read-only into the containers that need them. Scripts pass secrets through files and pipes, never as command-line arguments, and never print them.
+- The default `Admin` password never works: the password from `secrets/zabbix_admin_password` is set when the schema is created, before the server and the web UI start. Guest access stays disabled.
+- TimescaleDB telemetry is off.
+- Every container except the agent runs as a non-root user with all Linux capabilities dropped and `no-new-privileges`. All of them except the web UI have a read-only root filesystem with `tmpfs` for runtime files.
+- Images are pinned by digest. The CI workflow runs shellcheck, validates the Compose file, checks that the Nord stylesheet matches the pinned web image, and scans the images with Trivy on every push and every week.
+
+The Trivy scan fails on fixable HIGH and CRITICAL vulnerabilities. Findings that do not affect this stack are listed in `.trivyignore.yaml`, each with the reason and an expiry date (`expired_at`). After that date the scan fails again, and each entry must be checked again: delete it when a new image fixes the vulnerability, or extend it with a new reason. The Go command-line tools of the TimescaleDB image (`gosu`, `timescaledb-parallel-copy`, `timescaledb-tune`) are skipped, because they never handle network input.
+
+Exceptions and why they exist:
+
+- `zabbix-web` runs without a read-only root filesystem. Its entrypoint writes the nginx and PHP configuration at every start, for example `/etc/nginx/includes/access-log.conf`, and edits `/etc/nginx/nginx.conf` in place. With `read_only: true` it fails with `/etc/nginx/includes/access-log.conf: Read-only file system`. A `tmpfs` on those directories would hide the configuration files of the image.
+- `zabbix-server` keeps the `NET_RAW` capability. ICMP checks use `fping`, which needs raw sockets; without the capability `fping` cannot run ("Operation not permitted").
+- `zabbix-agent` runs with `privileged: true` and `pid: host`, so that it can monitor the Docker host (processes, CPU, memory, devices) instead of only its own container. This is a deliberate trade-off: a compromised agent container has root-equivalent access to the host. The agent only accepts connections from `zabbix-server` and is only reachable on the internal network. If you only want to monitor the stack itself, remove `privileged` and `pid` from the agent service.
+- `postgres-server` and `zabbix-backup` use `tmpfs` for `/tmp` and the PostgreSQL socket directory; `zabbix-server` uses `tmpfs` for `/tmp` and its internal CA directory, which its entrypoint fills at start.
+
+## Remote agents
+
+To monitor other machines, install Zabbix agent 2 on them and add them as hosts in the web UI. For active checks, the agents connect to the server port; see [Exposing the Zabbix server port](#exposing-the-zabbix-server-port). For passive checks, the server connects to the agents on port 10050.
+
+A Docker Compose setup for a remote agent is available at [r4ven-me/zabbix-agent](https://github.com/r4ven-me/zabbix-agent).
+
+## Testing
+
+`scripts/e2e.sh` starts a complete stack in an isolated directory under `.audit/e2e/` with its own project name, ports and secrets, and checks setup, bootstrap (including notifications and its idempotency), the agent connection, TLS, the hardening settings, backups and a restore. It removes everything at the end. It needs Docker and about 3 GB of free RAM:
+
+```sh
+scripts/e2e.sh
 ```
 
-> Where `1234567890`is the ID of the chat or group in Telegram.
+## Credits
 
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-107-1500x229.png)](https://r4ven.me/wp-content/uploads/2024/09/image-107.png)
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-106.png)](https://r4ven.me/wp-content/uploads/2024/09/image-106.png)
-
-It works 👍.
-
-**Testing in practice**
-
-If you connected the local one `zabbix-agent`during the initial setup step, then to check it, simply stop it with the command:
-
-```bash
-sudo docker compose -f /opt/zabbix/docker-compose.yml stop zabbix-agent
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-116.png)](https://r4ven.me/wp-content/uploads/2024/09/image-116.png)
-
-Go to the web interface along the path: “Monitoring” – “Problems”. In a few minutes, the agent will receive the “Unavailable” status, the problem will appear on the corresponding web panel and you should receive a notification in Telegram.
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-117-1500x262.png)](https://r4ven.me/wp-content/uploads/2024/09/image-117.png)
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-122.png)](https://r4ven.me/wp-content/uploads/2024/09/image-122.png)
-
-The message arrived, great. Now let's launch the agent:
-
-```bash
-sudo docker compose -f /opt/zabbix/docker-compose.yml start zabbix-agent
-```
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-118.png)](https://r4ven.me/wp-content/uploads/2024/09/image-118.png)
-
-In a few minutes it will be restored in the web panel and a corresponding notification will be sent to Telegram:
-
-[![](https://r4ven.me/wp-content/uploads/2024/09/image-123.png)](https://r4ven.me/wp-content/uploads/2024/09/image-123.png)
-
-Lovely 🤤.
-
-</details>
-
-## Conclusion
-
-Phew..🤯 this wasn't the easiest article. Especially in terms of the amount of information we had to sift through. But I think it was worth it. As a result, we got a flexible and easily portable monitoring system project that works inside docker containers. We also set up concise but informative notifications with graphs in Telegram to always be aware of the state of our infrastructure.
-
-I would also like to note the excellent work of Zabbix developers. In particular, the relevance and diversity of docker images and the availability of their build files. After writing this article, I respected them even more 👍.
-
-Thank you for reading 😊. If you have any questions, I invite you to [the Raven Chat](https://t.me/r4ven_me_chat/) , as you guessed, in Telegram 😅. We have a friendly community there 🚶‍♀️🐧🚶🐧🚶‍♂️🐧. And be sure to subscribe to the main Telegram channel: [@r4ven\_me](https://t.me/r4ven_me/) , so as not to miss the publication of new materials on the site.
-
-I wish you success and a successful salesman! 😌
-
-## Materials used
-
-- [My zabbix server repository | GitHub](https://github.com/r4ven-me/zabbix)
-- [My zabbix agent repository | GitHub](https://github.com/r4ven-me/zabbix-agent)
-- [Using TimescaleDB with Zabbix | Zabbix.com (EN)](https://www.zabbix.com/documentation/current/en/manual/appendix/install/timescaledb)
-- [The original docker files I adapted | GitHub](https://github.com/smejdil/zabbix-docker-timescaledb/tree/main/2.7.2-pg14)
-- [TimescaleDB docker image registry | Dockerhub](https://hub.docker.com/r/timescale/timescaledb)
-- [Description of the PostgresSQL docker image | Dockerhub](https://hub.docker.com/_/postgres)
-- [TimescaleDB docker image sources | GitHub](https://github.com/timescale/timescaledb-docker/)
-- [Description of Zabbix server docker image | Dockerhub](https://hub.docker.com/r/zabbix/zabbix-server-pgsql)
-- [Description of the Zabbix web docker image | Dockerhub](https://hub.docker.com/r/zabbix/zabbix-web-nginx-pgsql)
-- [Description of Zabbix agent docker image | Dockerhub](https://registry.hub.docker.com/r/zabbix/zabbix-agent/)
-- [Source Dockerfile for Zabbix server | GitHub](https://github.com/zabbix/zabbix-docker/tree/7.0/Dockerfiles/server-pgsql/alpine)
-- [Zabbix Notification Telegram Source Files | GitHub](https://github.com/xxsokolov/Zabbix-Notification-Telegram)
-- [Description of Zabbix Notification Telegram script | GitHub](https://github.com/xxsokolov/Zabbix-Notification-Telegram?)
-- [Zabbix Notification Telegram Installation Guide | GitHub](https://github.com/xxsokolov/Zabbix-Notification-Telegram/wiki/%D0%A3%D1%81%D1%82%D0%B0%D0%BD%D0%BE%D0%B2%D0%BA%D0%B0-%D0%BD%D0%BE%D1%82%D0%B8%D1%84%D0%B8%D0%BA%D0%B0%D1%82%D0%BE%D1%80%D0%B0-Zabbix-Notification-Telegram)
+This project is based on [r4ven-me/zabbix](https://github.com/r4ven-me/zabbix) by r4ven-me ([Telegram channel](https://t.me/r4ven_me/)), including the Nord theme. The remote agent setup is [r4ven-me/zabbix-agent](https://github.com/r4ven-me/zabbix-agent).

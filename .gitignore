@@ -1,0 +1,6 @@
+.audit/
+.env
+secrets/
+backups/
+.claude/
+.code-review-graph/

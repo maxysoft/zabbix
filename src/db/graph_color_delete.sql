@@ -1,1 +1,0 @@
-DELETE FROM graph_theme WHERE theme = 'nord-theme';

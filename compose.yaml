@@ -1,0 +1,243 @@
+name: zabbix
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
+x-hardened: &hardened
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  logging: *logging
+
+x-db-env: &db-env
+  DB_SERVER_HOST: postgres-server
+  POSTGRES_DB: zabbix
+  POSTGRES_USER: zabbix
+  POSTGRES_PASSWORD_FILE: /run/secrets/zabbix_db_password
+  TZ: ${TZ:-UTC}
+
+services:
+  postgres-server:
+    <<: *hardened
+    image: timescale/timescaledb:2.29.2-pg18@sha256:9508616d5b941ed931198504c5db3fb47e8f53f790732ea1e889591f1062057c
+    user: postgres
+    restart: unless-stopped
+    stop_grace_period: 1m
+    shm_size: 256m
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      TIMESCALEDB_TELEMETRY: "off"
+      TS_TUNE_MAX_CONNS: "200"
+      TZ: ${TZ:-UTC}
+    secrets: [postgres_password, zabbix_db_password]
+    volumes:
+      - pgdata:/var/lib/postgresql
+      # Mount the file, not the directory: the image keeps its own TimescaleDB init scripts there.
+      - ./config/postgres/initdb/010_zabbix.sh:/docker-entrypoint-initdb.d/010_zabbix.sh:ro
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql:uid=70,gid=70,mode=0775
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "zabbix", "-d", "zabbix"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 2m
+      start_interval: 2s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    networks: [backend]
+
+  zabbix-server:
+    <<: *hardened
+    image: zabbix/zabbix-server-pgsql:alpine-7.4-latest@sha256:07cdd9be60295f96fcdf07b2e7abfb513451e729329532faf5ad37c8d8aa27bc
+    restart: unless-stopped
+    stop_grace_period: 30s
+    cap_add: [NET_RAW]
+    depends_on:
+      postgres-server:
+        condition: service_healthy
+    environment:
+      <<: *db-env
+      ENABLE_TIMESCALEDB: "true"
+    secrets: [zabbix_db_password, zabbix_admin_password]
+    volumes:
+      # Mount files, not ./theme/dbscripts: a file mount nested in a directory mount creates an empty placeholder in the host directory.
+      - ./config/zabbix/admin-password.sql:/var/lib/zabbix/dbscripts/00-admin-password.sql:ro
+      - ./theme/dbscripts/nord-graph-theme.sql:/var/lib/zabbix/dbscripts/nord-graph-theme.sql:ro
+    tmpfs:
+      - /tmp
+      - /var/lib/zabbix/ssl/ssl_ca_internal:uid=1997,gid=0,mode=0775
+    ports:
+      - ${ZBX_SERVER_BIND:-127.0.0.1}:${ZBX_SERVER_PORT:-10051}:10051
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/10051"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10m
+      start_interval: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    networks: [backend, frontend]
+
+  zabbix-web:
+    <<: *hardened
+    image: zabbix/zabbix-web-nginx-pgsql:alpine-7.4-latest@sha256:8457fc4b765c6bf3aed486cff0422014aef1f6cb67f2fd2b649a84bb87e14b58
+    read_only: false
+    restart: unless-stopped
+    depends_on:
+      postgres-server:
+        condition: service_healthy
+      zabbix-server:
+        condition: service_healthy
+    environment:
+      <<: *db-env
+      ZBX_SERVER_HOST: zabbix-server
+      ZBX_SERVER_NAME: ${ZBX_SERVER_NAME:-Zabbix}
+      PHP_TZ: ${TZ:-UTC}
+      EXPOSE_WEB_SERVER_INFO: "off"
+    secrets:
+      - zabbix_db_password
+      - source: ssl_crt
+        target: /etc/ssl/nginx/ssl.crt
+      - source: ssl_key
+        target: /etc/ssl/nginx/ssl.key
+    volumes:
+      - ./config/nginx/dhparam.pem:/etc/ssl/nginx/dhparam.pem:ro
+      - ./theme/APP.php:/usr/share/zabbix/include/classes/core/APP.php:ro
+      - ./theme/nord-theme.css:/usr/share/zabbix/assets/styles/nord-theme.css:ro
+    tmpfs:
+      - /tmp
+    ports:
+      - ${ZBX_WEB_BIND:-127.0.0.1}:${ZBX_WEB_PORT:-8443}:8443
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5m
+      start_interval: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks: [backend, frontend]
+
+  zabbix-agent:
+    image: zabbix/zabbix-agent2:alpine-7.4-latest@sha256:124dc45f159eeac5eda7360b9dc3387895050227cb11581cefb7e1834f1eb477
+    restart: unless-stopped
+    privileged: true
+    pid: host
+    logging: *logging
+    environment:
+      ZBX_HOSTNAME: Zabbix server
+      ZBX_SERVER_HOST: zabbix-server
+      TZ: ${TZ:-UTC}
+    healthcheck:
+      # 2742 is port 10050 in hex. A TCP probe would log a rejected connection every interval.
+      test: ["CMD", "grep", "-qs", ":2742 [0-9A-F]*:0000 0A", "/proc/net/tcp", "/proc/net/tcp6"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 1m
+      start_interval: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    networks: [backend]
+
+  zabbix-bootstrap:
+    <<: *hardened
+    image: zabbix/zabbix-server-pgsql:alpine-7.4-latest@sha256:07cdd9be60295f96fcdf07b2e7abfb513451e729329532faf5ad37c8d8aa27bc
+    entrypoint: ["bash", "/usr/local/bin/bootstrap.sh"]
+    init: true
+    restart: "no"
+    depends_on:
+      zabbix-server:
+        condition: service_healthy
+      zabbix-web:
+        condition: service_healthy
+    environment:
+      ZBX_PUBLIC_URL: ${ZBX_PUBLIC_URL:?set ZBX_PUBLIC_URL in .env}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      SLACK_CHANNELS: ${SLACK_CHANNELS:-}
+    secrets: [zabbix_admin_password, telegram_bot_token, slack_bot_token]
+    volumes:
+      - ./bootstrap/bootstrap.sh:/usr/local/bin/bootstrap.sh:ro
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    networks: [backend]
+
+  zabbix-backup:
+    <<: *hardened
+    image: timescale/timescaledb:2.29.2-pg18@sha256:9508616d5b941ed931198504c5db3fb47e8f53f790732ea1e889591f1062057c
+    user: postgres
+    entrypoint: ["sh", "/usr/local/bin/backup.sh"]
+    init: true
+    restart: unless-stopped
+    depends_on:
+      postgres-server:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres-server
+      PGUSER: zabbix
+      PGDATABASE: zabbix
+      BACKUP_HOUR: ${BACKUP_HOUR:-3}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-7}
+      BACKUP_EXCLUDE_HISTORY: ${BACKUP_EXCLUDE_HISTORY:-false}
+      TZ: ${TZ:-UTC}
+    secrets: [zabbix_db_password]
+    volumes:
+      - ./backups:/backups
+      - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "sh", "-c", "! grep -qs failed /backups/.status"]
+      interval: 1m
+      timeout: 5s
+      retries: 1
+      start_period: 1m
+      start_interval: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks: [backend]
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  zabbix_db_password:
+    file: ./secrets/zabbix_db_password
+  zabbix_admin_password:
+    file: ./secrets/zabbix_admin_password
+  telegram_bot_token:
+    file: ./secrets/telegram_bot_token
+  slack_bot_token:
+    file: ./secrets/slack_bot_token
+  ssl_crt:
+    file: ./secrets/tls/ssl.crt
+  ssl_key:
+    file: ./secrets/tls/ssl.key
+
+volumes:
+  pgdata:
+
+networks:
+  backend:
+    internal: true
+  frontend:
