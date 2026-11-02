@@ -17,6 +17,10 @@ SERVER_IMAGE=$(sed -n 's/^ *image: *\(zabbix\/zabbix-server-pgsql:.*\)$/\1/p' co
 WEB_IMAGE=$(sed -n 's/^ *image: *\(zabbix\/zabbix-web-nginx-pgsql:.*\)$/\1/p' compose.yaml | head -n 1)
 AGENT_IMAGE=debian:13@sha256:913f6706df59a68922d1dd08f78c2476560a8d367897200a6005b00e5f67c2d5
 AGENT=zbxe2e-agent-$$
+AGENT2_IMAGE=zabbix/zabbix-agent2:alpine-trunk@sha256:af09cfa7ac5aa387dd32a811b8b2b0830ccc607f0671b624f876fe785f433193
+CAL_AGENT=zbxe2e-agent2-$$
+STATUS_CT=zbxe2e-status-$$
+STATUS_PORT=18877
 SSH_KEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINonpLIkSWxTnifdcUowSZe0rhqtTLhOnDI1ZsXLZL83 e2e@test'
 export COMPOSE_PROJECT_NAME=zbxe2e
 FAILS=0
@@ -43,7 +47,7 @@ count_results() {
 
 teardown() {
   echo "--- teardown"
-  docker rm -f "$AGENT" >/dev/null 2>&1 || true
+  docker rm -f "$AGENT" "$CAL_AGENT" "$STATUS_CT" >/dev/null 2>&1 || true
   if [ -d "$WD" ]; then
     (cd "$WD" && dc down -v --remove-orphans >/dev/null 2>&1) || true
     docker run --rm -u 0 -v "$REPO/.audit/e2e:/e" --entrypoint rm "$SERVER_IMAGE" -rf "/e/$RUN" || true
@@ -54,6 +58,34 @@ trap 'echo "e2e: aborted at line $LINENO" >&2' ERR
 
 bootstrap_exit_code() {
   docker wait "$(dc ps -aq zabbix-bootstrap)"
+}
+
+template_ids() {
+  in_api_container <<'EOF'
+source /usr/local/bin/bootstrap.sh
+admin_login_params | login
+t=$(get_id template templateid '{"host": "calcolalinee by Zabbix agent active"}')
+[ -n "$t" ]
+jq -n --arg t "$t" '{templateids: [$t], output: ["itemid"]}' | api item.get | jq -c 'map(.itemid) | sort'
+jq -n --arg t "$t" '{templateids: [$t], output: ["triggerid"]}' | api trigger.get | jq -c 'map(.triggerid) | sort'
+EOF
+}
+
+cal_api() {
+  {
+    cat <<'EOF'
+source /usr/local/bin/bootstrap.sh
+set +e
+admin_login_params | login
+r() { if eval "$2" >/dev/null 2>&1; then echo "PASS: calcolalinee: $1"; else echo "FAIL: calcolalinee: $1"; fi; }
+wait_for() { for _ in $(seq "$1"); do eval "$2" >/dev/null 2>&1 && return 0; sleep 5; done; return 1; }
+items() { echo '{"output": ["key_", "type", "state", "error", "lastclock", "lastvalue"], "host": "calcolalinee-e2e"}' | api item.get; }
+v() { items | jq -r --arg k "calcolalinee.$1" '.[] | select(.key_ == $k) | .lastvalue'; }
+problems() { echo '{"output": ["triggerid"], "host": "calcolalinee-e2e", "filter": {"value": 1}, "selectItems": ["key_"]}' | api trigger.get | jq -c '[.[].items[].key_ | ltrimstr("calcolalinee.")] | unique'; }
+events() { echo '{"output": ["name"], "source": 0, "object": 0, "value": 1, "selectHosts": ["host"]}' | api event.get | jq -c '[.[] | select(.hosts[0].host == "calcolalinee-e2e") | .name]'; }
+EOF
+    cat
+  } | in_api_container
 }
 
 wait_healthy() {
@@ -72,7 +104,7 @@ wait_healthy() {
 
 echo "--- prepare $WD"
 mkdir -p "$WD/secrets"
-cp -r compose.yaml .env.example setup.sh config bootstrap scripts theme backup "$WD/"
+cp -r compose.yaml .env.example setup.sh config bootstrap scripts templates theme backup "$WD/"
 cd "$WD"
 sed -e "s/^ZBX_WEB_PORT=.*/ZBX_WEB_PORT=$WEB_PORT/" \
   -e "s/^ZBX_SERVER_PORT=.*/ZBX_SERVER_PORT=$SERVER_PORT/" \
@@ -96,11 +128,14 @@ check "stack healthy (postgres, server, web, backup)" wait_healthy
 check "Admin password set at schema creation by pgcrypto, so Admin/zabbix never worked" [ "$(psql_pg "SELECT left(passwd, 7) FROM users WHERE username = 'Admin'")" = "\$2a\$10\$" ]
 check "zabbix-bootstrap exited 0 on first up" [ "$(bootstrap_exit_code)" = 0 ]
 dc logs --no-log-prefix zabbix-bootstrap | sed 's/^/  /'
+tids=$(template_ids || true)
+check "bootstrap imported the template calcolalinee by Zabbix agent active" [ -n "$tids" ]
 
 started=$(docker inspect -f '{{.State.StartedAt}}' "$(dc ps -aq zabbix-bootstrap)")
 dc up -d 2>&1 | tail -n 1
 check "zabbix-bootstrap exited 0 on second up" [ "$(bootstrap_exit_code)" = 0 ]
 check "second up re-ran zabbix-bootstrap" [ "$started" != "$(docker inspect -f '{{.State.StartedAt}}' "$(dc ps -aq zabbix-bootstrap)")" ]
+check "second bootstrap run kept the template's items and triggers (same ids)" [ "$tids" = "$(template_ids || true)" ]
 
 echo "--- API checks"
 in_api_container <<EOF | count_results "API checks"
@@ -125,6 +160,127 @@ for e in prod:#p test:#t; do
 done
 r "Admin theme can be set to nord-theme" 'echo "{\"userid\": \"1\", \"theme\": \"nord-theme\"}" | api user.update'
 EOF
+
+echo "--- calcolalinee template (fake status page, agent 2 container in active mode with PSK)"
+mkdir fake
+cat > fake/nginx.conf <<EOF
+pid /tmp/nginx.pid;
+error_log stderr;
+events {}
+http {
+  access_log off;
+  gzip on;
+  gzip_types application/json;
+  gzip_min_length 0;
+  client_body_temp_path /tmp/body;
+  proxy_temp_path /tmp/proxy;
+  fastcgi_temp_path /tmp/fastcgi;
+  uwsgi_temp_path /tmp/uwsgi;
+  scgi_temp_path /tmp/scgi;
+  server {
+    listen 127.0.0.1:$STATUS_PORT;
+    root /w;
+    default_type application/json;
+    error_page 503 /status.json;
+    location = /api/status {
+      if (-f /w/down) { return 503; }
+      alias /w/status.json;
+    }
+  }
+}
+EOF
+cat > fake/healthy.json <<'EOF'
+{"version": "2026.10.1", "uptime_s": 86400, "valhalla": {"ok": true, "version": "3.5.1"},
+ "files": {"stops": {"path": "/data/stops.csv", "present": true, "required": true, "bytes": 2048},
+           "requests": {"path": "/data/requests.csv", "present": true, "required": true, "bytes": 4096},
+           "zoning": {"path": "/data/zoning.geojson", "present": false, "required": false, "bytes": 0}},
+ "settings": {"backend": "mysql", "loaded": true, "error": null, "problems": []},
+ "database": {"configured": true, "ok": true, "connection": "ok", "tables": {"jobs": "ok", "settings": "ok"}},
+ "auth": {"problem": null},
+ "stats": {"held_days": [], "since": null, "last_error": null, "error_at": null, "lost_days": []},
+ "jobs": {"configured": true, "ok": true, "error": null, "queued": 1, "running": 1, "oldest_active_s": 300,
+          "awaiting_import": 2, "oldest_awaiting_import_s": 60, "failed_24h": 1}}
+EOF
+cat > fake/broken.json <<'EOF'
+{"version": "2026.10.2", "uptime_s": 20, "valhalla": {"ok": false, "error": "Read timed out. (read timeout=2)"},
+ "files": {"stops": {"path": "/data/stops.csv", "present": false, "required": true, "bytes": 0},
+           "requests": {"path": "/data/requests.csv", "present": true, "required": true, "bytes": 4096},
+           "zoning": {"path": "/data/zoning.geojson", "present": false, "required": false, "bytes": 0}},
+ "settings": {"backend": "mysql", "loaded": true, "error": null, "problems": []},
+ "database": {"configured": true, "ok": false, "connection": "unreachable", "tables": {}},
+ "auth": {"problem": "no_users"},
+ "stats": {"held_days": ["2026-10-16", "2026-10-17"], "since": "2026-10-16T03:00:00", "last_error": "OSError 28",
+           "error_at": "2026-10-17T03:00:00", "lost_days": ["2026-10-01"]},
+ "jobs": {"configured": true, "ok": true, "error": null, "queued": 3, "running": 1, "oldest_active_s": 8000,
+          "awaiting_import": 5, "oldest_awaiting_import_s": 4000, "failed_24h": 3}}
+EOF
+cp fake/healthy.json fake/status.json
+sed 's/"uptime_s": 86400/"uptime_s": 30/' fake/healthy.json > fake/restarted.json
+head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > fake/psk
+cat > fake/agent.conf <<EOF
+Server=
+ServerActive=127.0.0.1:$SERVER_PORT
+Hostname=calcolalinee-e2e
+RefreshActiveChecks=5
+LogType=console
+TLSConnect=psk
+TLSAccept=psk
+TLSPSKIdentity=calcolalinee-e2e
+TLSPSKFile=/w/psk
+AllowKey=web.page.get[http://127.0.0.1:$STATUS_PORT/api/status]
+DenyKey=web.page.get[*]
+EOF
+chmod -R a+rX fake
+docker run -d --name "$STATUS_CT" --network host -v "$WD/fake:/w:ro" \
+  --health-cmd "curl -fsS -o /dev/null http://127.0.0.1:$STATUS_PORT/api/status" --health-interval 10s --health-retries 3 \
+  --entrypoint nginx "$WEB_IMAGE" -e stderr -c /w/nginx.conf -g 'daemon off;' >/dev/null
+in_api_container <<EOF | count_results "calcolalinee host"
+source /usr/local/bin/bootstrap.sh
+admin_login_params | login
+jq -n --arg t "\$(get_id template templateid '{"host": "calcolalinee by Zabbix agent active"}')" \
+  --arg g "\$(get_id hostgroup groupid '{"name": "Linux servers"}')" '{
+    host: "calcolalinee-e2e", groups: [{groupid: \$g}], templates: [{templateid: \$t}], tags: [{tag: "env", value: "e2e"}],
+    tls_connect: 2, tls_accept: 2, tls_psk_identity: "calcolalinee-e2e", tls_psk: "$(cat fake/psk)",
+    macros: [{macro: "{\$CALCOLALINEE.STATUS.URL}", value: "http://127.0.0.1:$STATUS_PORT/api/status"},
+      {macro: "{\$CALCOLALINEE.INTERVAL}", value: "10s"},
+      {macro: "{\$CALCOLALINEE.VALHALLA.MAXDOWN}", value: "25s"}]}' | api host.create >/dev/null &&
+  echo "PASS: host calcolalinee-e2e created with the template, tag env=e2e and PSK" ||
+  echo "FAIL: host calcolalinee-e2e created with the template, tag env=e2e and PSK"
+EOF
+docker run -d --name "$CAL_AGENT" --network host -v "$WD/fake:/w:ro" \
+  --entrypoint /usr/sbin/zabbix_agent2 "$AGENT2_IMAGE" -c /w/agent.conf >/dev/null
+fails_before=$FAILS
+cal_api <<'EOF' | count_results "calcolalinee healthy status"
+filled() { items | jq -e '[.[] | select(.type == "18")] | length > 0 and all(.[]; .state == "0" and .lastclock != "0")'; }
+wait_for 36 filled
+r "every dependent item has a value" filled
+r "HTTP status code 200" '[ "$(v http.code)" = 200 ]'
+r "jobs block read (2 results awaiting import)" '[ "$(v jobs.awaiting)" = 2 ]'
+r "no problem while the status is healthy" '[ "$(problems)" = "[]" ]'
+items | jq -r '.[] | select(.state != "0") | "  unsupported: \(.key_): \(.error)"' || true
+EOF
+check "calcolalinee: fake status page is gzip-compressed" bash -c \
+  "docker exec '$STATUS_CT' curl -sD - -o /dev/null -H 'Accept-Encoding: gzip' http://127.0.0.1:$STATUS_PORT/api/status | grep -qi '^content-encoding: gzip'"
+cp fake/restarted.json fake/status.json
+cal_api <<'EOF' | count_results "calcolalinee restart"
+wait_for 12 'events | jq -e "index(\"calcolalinee: service restarted\")"'
+r "service restarted raised when the uptime drops and the version stays the same" 'events | jq -e "index(\"calcolalinee: service restarted\")"'
+EOF
+cp fake/broken.json fake/status.json
+touch fake/down
+cal_api <<'EOF' | count_results "calcolalinee broken status"
+expected='["auth.problem","db.ok","files.missing","jobs.active.age","jobs.failed","stats.held","stats.lost","valhalla.ok"]'
+wait_for 36 'problems | jq -e --argjson e "$expected" "(\$e - .) == []"'
+for k in $(jq -r '.[]' <<<"$expected"); do
+  r "problem raised by the trigger on $k" "problems | jq -e 'index(\"$k\")'"
+done
+r "HTTP 503 with body reaches the agent (code 503 while database.ok is false)" '[ "$(v http.code)" = 503 ]'
+r "version changed raised for 2026.10.2 and resolved on the next poll" 'events | jq -e "index(\"calcolalinee: version changed to 2026.10.2\")" && ! problems | jq -e "index(\"version\")"'
+r "no service restarted on a deploy (lower uptime with a new version)" 'events | jq -e "map(select(. == \"calcolalinee: service restarted\")) | length == 1"'
+r "no other problem (HTTP 503 is covered by the database problem, the unimported result needs 5 minutes)" '[ "$(problems)" = "$expected" ]'
+echo "  problems: $(problems)"
+EOF
+[ "$FAILS" = "$fails_before" ] || docker logs --tail 20 "$CAL_AGENT" 2>&1 | sed 's/^/  agent: /'
 
 echo "--- host agent (scripts/install-agent.sh in Debian 13 on the host network)"
 docker run -d --name "$AGENT" --network host -v "$WD:/w:ro" "$AGENT_IMAGE" sleep infinity >/dev/null
@@ -171,6 +327,12 @@ check "fping postgres-server works inside zabbix-server" dc exec -T zabbix-serve
 check "HTTPS port $WEB_PORT serves the login page" bash -c "docker run --rm --network host --entrypoint curl '$WEB_IMAGE' -sk https://127.0.0.1:$WEB_PORT/ | grep -q 'Sign in'"
 check "HTTP 8080 is not published on the host" [ "$(docker inspect -f '{{range $p, $b := .HostConfig.PortBindings}}{{$p}} {{end}}' "$(dc ps -q zabbix-web)")" = "8443/tcp " ]
 check "zabbix-server trapper port published only on 127.0.0.1" [ "$(docker inspect -f '{{range $p, $b := .HostConfig.PortBindings}}{{$p}}={{(index $b 0).HostIp}} {{end}}' "$(dc ps -q zabbix-server)")" = "10051/tcp=127.0.0.1 " ]
+in_api_container <<'EOF' | count_results "feature flags"
+source /usr/local/bin/bootstrap.sh
+admin_login_params | login
+echo '{"output": "extend"}' | api authentication.get | jq -e 'has("authentication_type") and (has("http_login_form") | not)' >/dev/null &&
+  echo "PASS: ZBX_HTTP_AUTH_ENABLED=false reaches the frontend" || echo "FAIL: ZBX_HTTP_AUTH_ENABLED=false reaches the frontend"
+EOF
 
 echo "--- hardening"
 non_root() { [ -n "$1" ] && [ "${1%%:*}" != root ] && [ "${1%%:*}" != 0 ]; }
@@ -292,6 +454,12 @@ failed_dump_leaves_nothing() {
 }
 check "failing pg_dump with encryption fails the backup and leaves no file" failed_dump_leaves_nothing
 check "backups/ still belongs to uid 70 with mode 0700" [ "$(as_root 'stat -c %u:%a backups')" = 70:700 ]
+
+echo "--- calcolalinee: unimported result, at least 5 minutes after the broken status"
+cal_api <<'EOF' | count_results "calcolalinee unimported result"
+wait_for 72 'problems | jq -e "index(\"jobs.awaiting.age\")"'
+r "problem raised by the trigger on jobs.awaiting.age once the age stays above the limit for 5 minutes" 'problems | jq -e "index(\"jobs.awaiting.age\")"'
+EOF
 
 echo "--- result"
 if [ "$FAILS" -eq 0 ]; then

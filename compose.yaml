@@ -104,6 +104,11 @@ services:
       ZBX_SERVER_NAME: ${ZBX_SERVER_NAME:-Zabbix}
       PHP_TZ: ${TZ:-UTC}
       EXPOSE_WEB_SERVER_INFO: "off"
+      ZBX_BANNERS_ENABLED: "false"
+      ZBX_HTTP_AUTH_ENABLED: "false"
+      # With "false" the API rejects modules.default_access in roles, and bootstrap.sh fails on the Slack role.
+      ZBX_MODULES_CONFIG_ENABLED: "true"
+      ZBX_MEDIA_TYPE_DENYLIST: '["script","sms","push"]'
     secrets:
       - zabbix_db_password
       - source: ssl_crt
@@ -149,6 +154,7 @@ services:
     secrets: [zabbix_admin_password, telegram_bot_token, slack_bot_token]
     volumes:
       - ./bootstrap/bootstrap.sh:/usr/local/bin/bootstrap.sh:ro
+      - ./templates:/templates:ro
     tmpfs:
       - /tmp
     deploy:

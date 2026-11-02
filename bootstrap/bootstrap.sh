@@ -10,6 +10,7 @@ SLACK_TOKEN_FILE=/run/secrets/slack_bot_token
 SLACK_ACTION_PREFIX="Slack: env="
 SLACK_ROLE="Slack notifications"
 SLACK_GROUP="Slack notifications"
+TEMPLATE_DIR=/templates
 HDR=$(mktemp)
 
 log() { echo "bootstrap: $*"; }
@@ -98,6 +99,22 @@ use_active_agent_template() {
     jq -c --argjson k "$keys" '[.[] | select(.templateid == "0" and (.key_ | IN($k[]))) | .itemid]')
   [ "$ids" = '[]' ] || api item.delete <<<"$ids" >/dev/null
   log "host \"Zabbix server\": template \"Linux by Zabbix agent\" replaced by \"Linux by Zabbix agent active\", $(jq length <<<"$ids") leftover item(s) of the old template deleted"
+}
+
+import_templates() {
+  local f
+  for f in "$TEMPLATE_DIR"/*.yaml; do
+    [ -e "$f" ] || continue
+    jq -n --rawfile src "$f" '
+      {createMissing: true, updateExisting: true} as $keep
+      | ($keep + {deleteMissing: true}) as $sync
+      | {format: "yaml", source: $src, rules: {
+          template_groups: $keep, templates: $keep, templateLinkage: {createMissing: true},
+          items: $sync, triggers: $sync, discoveryRules: $sync, graphs: $sync,
+          httptests: $sync, templateDashboards: $sync, valueMaps: $sync}}' |
+      api configuration.import >/dev/null || die "cannot import templates/${f##*/}"
+    log "template file templates/${f##*/} imported"
+  done
 }
 
 ensure_guest_disabled() {
@@ -261,6 +278,7 @@ main() {
   ensure_guest_disabled
   configure_telegram
   configure_slack
+  import_templates
   log "done"
 }
 

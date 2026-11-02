@@ -9,7 +9,7 @@ A production-oriented Zabbix stack: PostgreSQL with TimescaleDB, Zabbix server, 
 | `postgres-server` | `timescale/timescaledb:2.29.2-pg18` | PostgreSQL 18 with TimescaleDB. Data lives in the named volume `pgdata`. |
 | `zabbix-server` | `zabbix/zabbix-server-pgsql` | Zabbix server. Creates the schema and TimescaleDB hypertables on first start and sets the `Admin` password. |
 | `zabbix-web` | `zabbix/zabbix-web-nginx-pgsql` | Web UI and API, served by the image's nginx over HTTPS on container port 8443. |
-| `zabbix-bootstrap` | built from `bootstrap/Dockerfile` | One-shot job that configures Zabbix through its API on every `docker compose up`. The image is Alpine with `bash`, `curl` and `jq`, because the Zabbix 8.0 server image no longer contains `curl` and `jq`. |
+| `zabbix-bootstrap` | built from `bootstrap/Dockerfile` | One-shot job that configures Zabbix through its API on every `docker compose up` and imports the templates in `templates/`. The image is Alpine with `bash`, `curl` and `jq`, because the Zabbix 8.0 server image no longer contains `curl` and `jq`. |
 | `zabbix-backup` | built from `backup/Dockerfile` | Nightly `pg_dump` of the Zabbix database into `./backups`, optionally encrypted with `age`. The image is `timescale/timescaledb:2.29.2-pg18` plus the `age` and `age-keygen` binaries. |
 
 The Docker host itself is monitored by Zabbix agent 2, installed on the host by `scripts/install-agent.sh`. See [Host agent](#host-agent).
@@ -159,7 +159,7 @@ Zabbix server settings are set with `ZBX_*` environment variables, as described 
 
 ## Notifications
 
-The bootstrap job configures notifications on every `docker compose up`.
+The bootstrap job configures notifications on every `docker compose up`. It also imports the templates in `templates/`; see [Template import](#template-import).
 
 ### Telegram
 
@@ -357,6 +357,7 @@ To move to a new host, copy `.env` and `secrets/` from the old host (so that the
 What the stack does by default:
 
 - The web UI is served over HTTPS only. Plain HTTP (container port 8080) is never published; it is used inside the stack for the health check and by the bootstrap job over the internal network. Server version headers are disabled.
+- The web UI sets the Zabbix 8.0 feature flags in `compose.yaml`. `ZBX_BANNERS_ENABLED=false` stops browsers from loading promotional banners from `services.zabbix.com`. `ZBX_HTTP_AUTH_ENABLED=false` turns off HTTP (web server) authentication, which the stack does not use. `ZBX_MEDIA_TYPE_DENYLIST` hides the Script, SMS and Push media types in the web UI: the stack has no alert scripts, no GSM modem and no mobile app. The API is not affected, and Email and webhook media types (including Telegram and Slack) stay editable. `ZBX_MODULES_CONFIG_ENABLED` stays `true`: with `false`, the API rejects module rules in roles, and the bootstrap job fails when it restricts the Slack role. To change a flag, edit it in `compose.yaml` and run `docker compose up -d`.
 - The web UI and the server port are published on `127.0.0.1` unless you change the bind addresses. PostgreSQL is never published.
 - The `backend` network is internal (no internet access). PostgreSQL, the bootstrap job and the backup job are only on this network. `zabbix-server` and `zabbix-web` are also on the `frontend` network: the server needs internet access for Telegram and Slack webhooks and must be reachable for the host agent and remote agents, and the web UI must be published.
 - Zabbix connects to PostgreSQL as the role `zabbix`, which owns the database but is not a superuser. The superuser `postgres` is only used to initialise the database and for maintenance (restore, extension updates).
@@ -383,9 +384,109 @@ To monitor other machines, install Zabbix agent 2 on them and add them as hosts 
 
 A Docker Compose setup for a remote agent is available at [r4ven-me/zabbix-agent](https://github.com/r4ven-me/zabbix-agent).
 
+## Monitoring calcolalinee
+
+The template "calcolalinee by Zabbix agent active" (`templates/calcolalinee.yaml`) monitors the calcolalinee app through its status page `/api/status`. The Zabbix server cannot reach the VMs that run the app, so Zabbix agent 2 runs on each VM in active mode: it reads the status page on the VM and sends the values to the Zabbix server. There is one host per environment, `calcolalinee-prod` with the tag `env=prod` and `calcolalinee-test` with the tag `env=test`, so their problems go to the Slack channel of the environment (see [Slack](#slack)).
+
+### Template import
+
+The bootstrap job imports every `templates/*.yaml` file (Zabbix export format) on every `docker compose up`, and logs one line per file. It creates missing and updates existing template groups, templates, items, triggers, discovery rules, graphs, web scenarios, template dashboards and value maps, and deletes those elements of a template that the file no longer contains. Hosts, host macros and host tags are not changed. If an import fails, the bootstrap job stops with the API error.
+
+To add another template, export it from Zabbix in YAML format (or take it from the Zabbix repository), copy it into `templates/` and run `docker compose up -d`. Change templates in these files, not in the web UI: the next bootstrap run overwrites changes made in the UI. To change a threshold for one host, set the macro on the host.
+
+### What the template checks
+
+Every `{$CALCOLALINEE.INTERVAL}` (default 1 minute) the agent reads `{$CALCOLALINEE.STATUS.URL}` (default `http://127.0.0.1:8877/api/status`) with `web.page.get`. Agent 2 returns the status line, the headers and the body also for HTTP errors, so the template reads the JSON body of a 503 response as well.
+
+| Problem | Severity | Macro (default) |
+| --- | --- | --- |
+| No status data (agent, container or app not answering) | High | `{$CALCOLALINEE.NODATA}` (5m) |
+| Status page returns an HTTP code other than 200, or a 503 without the app's status data (for example from a proxy) | High | `{$CALCOLALINEE.NODATA}` (5m), for the 503 case |
+| Database unreachable or unusable (`database.ok` false; the page returns 503) | High | |
+| Database tables missing or unreadable | Warning | |
+| Valhalla unreachable; routes fall back to straight-line speeds | Average | `{$CALCOLALINEE.VALHALLA.MAXDOWN}` (5m) |
+| Required input files missing | Average | |
+| Authentication setup problem (`auth.problem` set): nobody can sign in | High | |
+| Settings error (`settings.error` or `settings.problems`) | Warning | |
+| Stats aggregation failing, job pruning held, so files accumulate | Warning | `{$CALCOLALINEE.STATS.HELD.MAX}` (0 days) |
+| Stats of days lost (a new day in `stats.lost_days`; resolves by itself within a day, can be closed by hand) | Warning | |
+| Job queued or running for too long | Average | `{$CALCOLALINEE.JOB.ACTIVE.MAX}` (2h) |
+| Finished result not imported by ColdFusion for 5 minutes past the limit: the lines do not reach production (can be closed by hand) | High | `{$CALCOLALINEE.IMPORT.MAX}` (1h) |
+| Too many failed jobs in 24 hours | Warning | `{$CALCOLALINEE.JOBS.FAILED.MAX}` (2) |
+| Job register query failing | Warning | |
+| Service restarted (uptime dropped, version unchanged; resolves on the next poll) | Warning | |
+| Version changed (deploy marker; resolves on the next poll) | Information | |
+
+One outage raises one problem. A 503 response with the app's status data raises only the database problem. The table, settings and job register problems depend on the database problem. A stopped container raises "no status data".
+
+The app reports the seconds since its start in `uptime_s`. When the uptime drops and the version stays the same, the app restarted without a deploy, for example after a crash or an out-of-memory kill. With an app version that does not report `uptime_s`, only the uptime item is "Not supported".
+
+The age of a result awaiting import counts from the job start, so a job that ran longer than `{$CALCOLALINEE.IMPORT.MAX}` is above the limit until ColdFusion imports it (the importer polls every 61 s). The problem therefore opens only when the age stays above the limit for 5 minutes. A result that will never be imported keeps the problem open; close it by hand.
+
+The job items read the `jobs` block of `/api/status`. With an app version that does not have it, the job items stay empty and the other items work.
+
+### Agent on the VM
+
+Do this on the prod VM and on the test VM, as root. The examples are for prod; on the test VM use `calcolalinee-test` and a separate key.
+
+1. Install Zabbix agent 2 version 8.0 from `repo.zabbix.com`, the same way `scripts/install-agent.sh` does (see [Host agent](#host-agent) for the release candidate note). On Debian 13:
+
+   ```sh
+   curl -fsSLO https://repo.zabbix.com/zabbix/8.0/release/debian/pool/main/z/zabbix-release/zabbix-release_latest_8.0+debian13_all.deb
+   dpkg -i zabbix-release_latest_8.0+debian13_all.deb
+   apt-get update && apt-get install -y zabbix-agent2
+   ```
+
+   On Debian 12 use `debian12` in the file name. On Ubuntu 22.04 or 24.04 use `ubuntu` in the path and `ubuntu22.04` or `ubuntu24.04` in the file name. On RHEL 9 or 10 install `https://repo.zabbix.com/zabbix/8.0/release/rhel/9/noarch/zabbix-release-latest-8.0.el9.noarch.rpm` (or `10` and `el10`) and then `zabbix-agent2` with `dnf`.
+2. Create the pre-shared key:
+
+   ```sh
+   openssl rand -hex 32 > /etc/zabbix/calcolalinee.psk
+   chown root:zabbix /etc/zabbix/calcolalinee.psk
+   chmod 0640 /etc/zabbix/calcolalinee.psk
+   ```
+
+3. Create `/etc/zabbix/zabbix_agent2.d/calcolalinee.conf`. `ServerActive` is the address of the Zabbix host and `ZBX_SERVER_PORT` from its `.env`:
+
+   ```ini
+   Server=
+   ServerActive=zabbix.example.com:10051
+   Hostname=calcolalinee-prod
+   TLSConnect=psk
+   TLSAccept=psk
+   TLSPSKIdentity=calcolalinee-prod
+   TLSPSKFile=/etc/zabbix/calcolalinee.psk
+   AllowKey=web.page.get[http://127.0.0.1:8877/api/status]
+   DenyKey=web.page.get[*]
+   ```
+
+   `Server=` turns passive checks off, so the agent opens no port. `AllowKey` and `DenyKey` let the agent fetch only the status page; without them, anyone who controls the Zabbix server or can edit the template could use the agent to fetch any URL that the VM reaches, including internal services. If you change `{$CALCOLALINEE.STATUS.URL}`, change `AllowKey` to the same URL.
+4. Check the configuration and start the agent:
+
+   ```sh
+   zabbix_agent2 -T -c /etc/zabbix/zabbix_agent2.conf
+   systemctl enable zabbix-agent2
+   systemctl restart zabbix-agent2
+   ```
+
+The VMs must reach the Zabbix server port: set `ZBX_SERVER_BIND` and limit the allowed sources as described in [Exposing the Zabbix server port](#exposing-the-zabbix-server-port).
+
+### Hosts in the web UI
+
+Create one host per environment under Data collection > Hosts > Create host:
+
+- Host name: the `Hostname` of the agent, `calcolalinee-prod` or `calcolalinee-test`.
+- Templates: "Linux by Zabbix agent active" and "calcolalinee by Zabbix agent active".
+- Host groups: for example "Linux servers". No interface is needed for an active agent.
+- Tags: `env` with the value `prod` or `test`.
+- Macros: set the macros of the table above only where the defaults do not fit.
+- Encryption: Connections to host "PSK", Connections from host only "PSK", PSK identity `calcolalinee-prod` (or `calcolalinee-test`), PSK the content of the key file on that VM.
+
+The first values arrive about a minute after the agent has started; check them under Monitoring > Latest data.
+
 ## Testing
 
-`scripts/e2e.sh` starts a complete stack in an isolated directory under `.audit/e2e/` with its own project name, ports and secrets, and checks setup, bootstrap (including notifications, the switch to the active agent template without leftover items of the old template, and its idempotency), TLS, the hardening settings, backups (including mode 0600) and a restore. It runs `scripts/install-agent.sh` in a Debian 13 container on the host network and checks that the agent's active checks arrive and that the agent listens on no port. It checks encrypted backups: the dump starts with the `age` header, restores with the private key as described in [Restore](#restore), and an invalid key or a failing `pg_dump` stops the backup without leaving a file. It removes everything at the end. It needs Docker and about 3 GB of free RAM:
+`scripts/e2e.sh` starts a complete stack in an isolated directory under `.audit/e2e/` with its own project name, ports and secrets, and checks setup, bootstrap (including notifications, the switch to the active agent template without leftover items of the old template, and its idempotency), TLS, the hardening settings, backups (including mode 0600) and a restore. It runs `scripts/install-agent.sh` in a Debian 13 container on the host network and checks that the agent's active checks arrive and that the agent listens on no port. It checks that the bootstrap job imports the templates and that a second run keeps the template's items and triggers. It tests the calcolalinee template with the official agent 2 image in active mode with PSK and the `AllowKey`/`DenyKey` lines of [Agent on the VM](#agent-on-the-vm), and a fake status page served gzip-compressed by nginx: with a healthy status every item gets a value and no problem is open; a lower uptime with the same version raises "service restarted"; with a broken status (database down with HTTP 503, Valhalla down, a missing file, an authentication problem, held and lost stats days, an old job, an old unimported result, too many failed jobs, a new version with a lower uptime) the expected problems open, "version changed" opens and resolves on the next poll, "service restarted" does not open again, and the HTTP code problem stays closed because the 503 response carries the app's status data. At the end of the run it checks that the unimported-result problem has opened, 5 minutes after the broken status. It checks encrypted backups: the dump starts with the `age` header, restores with the private key as described in [Restore](#restore), and an invalid key or a failing `pg_dump` stops the backup without leaving a file. It removes everything at the end. It needs Docker and about 3 GB of free RAM:
 
 ```sh
 scripts/e2e.sh

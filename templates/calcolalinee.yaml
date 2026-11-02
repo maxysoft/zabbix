@@ -1,0 +1,501 @@
+zabbix_export:
+  version: '8.0'
+  template_groups:
+    - uuid: a571c0d144b14fd4a87a9d9b2aa9fcd6
+      name: Templates/Applications
+  templates:
+    - uuid: e83d5d5b039c4f50b5bd01c68fbacfe1
+      template: 'calcolalinee by Zabbix agent active'
+      name: 'calcolalinee by Zabbix agent active'
+      description: 'Monitors calcolalinee through its /api/status page, with Zabbix agent 2 in active mode on the VM that runs the app. See "Monitoring calcolalinee" in the README of the Zabbix stack.'
+      groups:
+        - name: Templates/Applications
+      items:
+        - uuid: d210cf167ee743868d0bab41f456580f
+          name: 'Status page'
+          type: ZABBIX_ACTIVE
+          key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+          delay: '{$CALCOLALINEE.INTERVAL}'
+          history: 1h
+          value_type: TEXT
+          trends: '0'
+          timeout: 10s
+          description: 'HTTP status code and JSON body of /api/status.'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var out = {code: parseInt(value.split(' ')[1], 10), body: null};
+                  try {
+                    out.body = JSON.parse(value.substring(value.indexOf('\r\n\r\n') + 4));
+                  } catch (e) {}
+                  return JSON.stringify(out);
+          triggers:
+            - uuid: dab076f8f0164d21b7e5c6c0905c96b5
+              expression: 'jsonpath(last(/calcolalinee by Zabbix agent active/web.page.get[{$CALCOLALINEE.STATUS.URL}]),"$.body.uptime_s",0)<jsonpath(last(/calcolalinee by Zabbix agent active/web.page.get[{$CALCOLALINEE.STATUS.URL}],#2),"$.body.uptime_s",0) and jsonpath(last(/calcolalinee by Zabbix agent active/web.page.get[{$CALCOLALINEE.STATUS.URL}]),"$.body.version","")=jsonpath(last(/calcolalinee by Zabbix agent active/web.page.get[{$CALCOLALINEE.STATUS.URL}],#2),"$.body.version","")'
+              name: 'calcolalinee: service restarted'
+              priority: WARNING
+              description: 'The uptime dropped while the version stayed the same, so the app restarted without a deploy. Resolves on the next poll.'
+        - uuid: 342b198f742a47b39173c1ca4881c6a4
+          name: 'HTTP status code'
+          type: DEPENDENT
+          key: calcolalinee.http.code
+          delay: '0'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.code
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+          triggers:
+            - uuid: 58b5851060a346f98d1d000947e2bc3b
+              expression: 'nodata(/calcolalinee by Zabbix agent active/calcolalinee.http.code,{$CALCOLALINEE.NODATA})=1'
+              name: 'calcolalinee: no status data for {$CALCOLALINEE.NODATA}'
+              priority: HIGH
+        - uuid: ebad00dbcc314e1c8a1edaa2e907f0fa
+          name: 'Database OK'
+          type: DEPENDENT
+          key: calcolalinee.db.ok
+          delay: '0'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.body.database.ok
+            - type: BOOL_TO_DECIMAL
+              parameters:
+                - ''
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+          triggers:
+            - uuid: 323f9219f58e4cbba1f1f5ec08f49228
+              expression: 'last(/calcolalinee by Zabbix agent active/calcolalinee.db.ok)=0'
+              name: 'calcolalinee: database unreachable or unusable'
+              priority: HIGH
+        - uuid: eba7315a4c0047978d9d818f35120a30
+          name: 'Database connection'
+          type: DEPENDENT
+          key: calcolalinee.db.connection
+          delay: '0'
+          value_type: CHAR
+          trends: '0'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.body.database.connection
+              error_handler: CUSTOM_VALUE
+              error_handler_params: 'not configured'
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+        - uuid: 28b032039d3c429b9a174c1009eb5ce2
+          name: 'Database tables not OK'
+          type: DEPENDENT
+          key: calcolalinee.db.tables.bad
+          delay: '0'
+          value_type: TEXT
+          trends: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var t = JSON.parse(value).body.database.tables || {}, bad = [];
+                  for (var n in t) {
+                    if (t[n] !== 'ok') bad.push(n + ': ' + t[n]);
+                  }
+                  return bad.join(', ');
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+          triggers:
+            - uuid: 56a9af60a6bd48f88bf0db60c0c9d384
+              expression: 'length(last(/calcolalinee by Zabbix agent active/calcolalinee.db.tables.bad))>0'
+              name: 'calcolalinee: database tables missing or unreadable'
+              opdata: '{ITEM.LASTVALUE1}'
+              priority: WARNING
+              dependencies:
+                - name: 'calcolalinee: database unreachable or unusable'
+                  expression: 'last(/calcolalinee by Zabbix agent active/calcolalinee.db.ok)=0'
+        - uuid: 3d2679739f0946c0bf8f1b0692dab3e7
+          name: 'Valhalla OK'
+          type: DEPENDENT
+          key: calcolalinee.valhalla.ok
+          delay: '0'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.body.valhalla.ok
+            - type: BOOL_TO_DECIMAL
+              parameters:
+                - ''
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+          triggers:
+            - uuid: 4348a139ff1f430f841062367cf913a8
+              expression: 'max(/calcolalinee by Zabbix agent active/calcolalinee.valhalla.ok,{$CALCOLALINEE.VALHALLA.MAXDOWN})=0'
+              name: 'calcolalinee: Valhalla unreachable for {$CALCOLALINEE.VALHALLA.MAXDOWN}'
+              priority: AVERAGE
+              description: 'Routes fall back to straight-line speeds until Valhalla answers again.'
+        - uuid: bbcee1815e554728b001b5d8fac83bc8
+          name: 'Valhalla error'
+          type: DEPENDENT
+          key: calcolalinee.valhalla.error
+          delay: '0'
+          value_type: TEXT
+          trends: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - 'return JSON.parse(value).body.valhalla.error || '''';'
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+        - uuid: 994daa36360c4c8fb4e87d38ca06dc04
+          name: 'Required input files missing'
+          type: DEPENDENT
+          key: calcolalinee.files.missing
+          delay: '0'
+          value_type: TEXT
+          trends: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var f = JSON.parse(value).body.files, missing = [];
+                  for (var n in f) {
+                    if (f[n].required && !f[n].present) missing.push(n);
+                  }
+                  return missing.join(', ');
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+          triggers:
+            - uuid: a00a0986614645b794008ff0864e886c
+              expression: 'length(last(/calcolalinee by Zabbix agent active/calcolalinee.files.missing))>0'
+              name: 'calcolalinee: required input files missing'
+              opdata: '{ITEM.LASTVALUE1}'
+              priority: AVERAGE
+        - uuid: ff6e8ce1e15b4d06981b385ba8d6a794
+          name: 'Authentication problem'
+          type: DEPENDENT
+          key: calcolalinee.auth.problem
+          delay: '0'
+          value_type: CHAR
+          trends: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - 'return JSON.parse(value).body.auth.problem || '''';'
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+          triggers:
+            - uuid: 1409ca95db1e4b24beafc2798dc420a4
+              expression: 'length(last(/calcolalinee by Zabbix agent active/calcolalinee.auth.problem))>0'
+              name: 'calcolalinee: authentication setup problem, nobody can sign in'
+              opdata: '{ITEM.LASTVALUE1}'
+              priority: HIGH
+        - uuid: 9b83d43b5edd4bcb83c4fc457eb7bb26
+          name: 'Settings error'
+          type: DEPENDENT
+          key: calcolalinee.settings.error
+          delay: '0'
+          value_type: TEXT
+          trends: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var s = JSON.parse(value).body.settings;
+                  return [s.error].concat(s.problems || []).filter(Boolean).join('; ');
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+          triggers:
+            - uuid: a7f4686745c64123aa3e4e38bb07193a
+              expression: 'length(last(/calcolalinee by Zabbix agent active/calcolalinee.settings.error))>0'
+              name: 'calcolalinee: settings error'
+              opdata: '{ITEM.LASTVALUE1}'
+              priority: WARNING
+              dependencies:
+                - name: 'calcolalinee: database unreachable or unusable'
+                  expression: 'last(/calcolalinee by Zabbix agent active/calcolalinee.db.ok)=0'
+        - uuid: 4d6cf66da9e346eaa9fc79e4c22e6de1
+          name: 'Stats days held'
+          type: DEPENDENT
+          key: calcolalinee.stats.held
+          delay: '0'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.body.stats.held_days.length()
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+          triggers:
+            - uuid: 638eb58da68e4e538fcac04cd1e9b019
+              expression: 'last(/calcolalinee by Zabbix agent active/calcolalinee.stats.held)>{$CALCOLALINEE.STATS.HELD.MAX}'
+              name: 'calcolalinee: stats aggregation failing, job pruning held'
+              opdata: 'Days held: {ITEM.LASTVALUE1}'
+              priority: WARNING
+              description: 'Finished jobs are not pruned while their day has no stats, so files accumulate. See the items Stats held since and Stats last error.'
+        - uuid: db15ee8fec124261bb3abc9ad81c51eb
+          name: 'Stats held since'
+          type: DEPENDENT
+          key: calcolalinee.stats.since
+          delay: '0'
+          value_type: CHAR
+          trends: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - 'return JSON.parse(value).body.stats.since || '''';'
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+        - uuid: 3cc8decf860c4d4cb77bc1534492727c
+          name: 'Stats last error'
+          type: DEPENDENT
+          key: calcolalinee.stats.last_error
+          delay: '0'
+          value_type: TEXT
+          trends: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - 'return JSON.parse(value).body.stats.last_error || '''';'
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+        - uuid: 6e56c95a8a4d44938931ec30ea1bf8cc
+          name: 'Stats days lost'
+          type: DEPENDENT
+          key: calcolalinee.stats.lost
+          delay: '0'
+          value_type: TEXT
+          trends: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - 'return JSON.parse(value).body.stats.lost_days.join('', '');'
+            - type: DISCARD_UNCHANGED_HEARTBEAT
+              parameters:
+                - 1d
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+          triggers:
+            - uuid: e42abbc203764d3aac9d50b91dc610b4
+              expression: 'change(/calcolalinee by Zabbix agent active/calcolalinee.stats.lost)=1 and length(last(/calcolalinee by Zabbix agent active/calcolalinee.stats.lost))>0'
+              name: 'calcolalinee: stats of days lost'
+              opdata: '{ITEM.LASTVALUE1}'
+              priority: WARNING
+              manual_close: 'YES'
+        - uuid: ecebb2a61a974ecc94f4eef5c8934047
+          name: 'Version'
+          type: DEPENDENT
+          key: calcolalinee.version
+          delay: '0'
+          history: 7d
+          value_type: CHAR
+          trends: '0'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.body.version
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+          triggers:
+            - uuid: 72c2e90bc30f4821b1765c8a0cc1cd14
+              expression: 'change(/calcolalinee by Zabbix agent active/calcolalinee.version)=1 and length(last(/calcolalinee by Zabbix agent active/calcolalinee.version))>0'
+              name: 'calcolalinee: version changed to {ITEM.LASTVALUE1}'
+              priority: INFO
+              manual_close: 'YES'
+        - uuid: 5536c55db456437e9ec6e2adcc04b04e
+          name: 'Uptime'
+          type: DEPENDENT
+          key: calcolalinee.uptime
+          delay: '0'
+          units: uptime
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.body.uptime_s
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+        - uuid: 78e9131b4c864a49aa69cdd7759a4678
+          name: 'Job register OK'
+          type: DEPENDENT
+          key: calcolalinee.jobs.ok
+          delay: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var j = JSON.parse(value).body.jobs;
+                  if (!j || !j.configured) throw 'job register not configured';
+                  return j.ok ? 1 : 0;
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+          triggers:
+            - uuid: 7a063504f5dc4867bacf46ba32ae30f9
+              expression: 'last(/calcolalinee by Zabbix agent active/calcolalinee.jobs.ok)=0'
+              name: 'calcolalinee: job register query failing'
+              priority: WARNING
+              description: 'See the item Job register error.'
+              dependencies:
+                - name: 'calcolalinee: database unreachable or unusable'
+                  expression: 'last(/calcolalinee by Zabbix agent active/calcolalinee.db.ok)=0'
+        - uuid: cad1b16d6ec0485cb63a3c665fa7119f
+          name: 'Job register error'
+          type: DEPENDENT
+          key: calcolalinee.jobs.error
+          delay: '0'
+          value_type: TEXT
+          trends: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var j = JSON.parse(value).body.jobs;
+                  if (!j || !j.configured) throw 'job register not configured';
+                  return j.error || '';
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+        - uuid: 51014cd7955147258820fee2b66dc267
+          name: 'Jobs queued'
+          type: DEPENDENT
+          key: calcolalinee.jobs.queued
+          delay: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var j = JSON.parse(value).body.jobs;
+                  if (!j || !j.configured || !j.ok) throw 'no job counts';
+                  return j.queued;
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+        - uuid: 65e795aa25e040f6ad17e9c33b4a97f3
+          name: 'Jobs running'
+          type: DEPENDENT
+          key: calcolalinee.jobs.running
+          delay: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var j = JSON.parse(value).body.jobs;
+                  if (!j || !j.configured || !j.ok) throw 'no job counts';
+                  return j.running;
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+        - uuid: b5fa80ba15804e159f7581f3d4693041
+          name: 'Oldest queued or running job age'
+          type: DEPENDENT
+          key: calcolalinee.jobs.active.age
+          delay: '0'
+          units: s
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var j = JSON.parse(value).body.jobs;
+                  if (!j || !j.configured || !j.ok) throw 'no job counts';
+                  return j.oldest_active_s || 0;
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+          triggers:
+            - uuid: 693e192747114fcd9824c85c601aca63
+              expression: 'last(/calcolalinee by Zabbix agent active/calcolalinee.jobs.active.age)>{$CALCOLALINEE.JOB.ACTIVE.MAX}'
+              name: 'calcolalinee: job queued or running for more than {$CALCOLALINEE.JOB.ACTIVE.MAX}'
+              opdata: '{ITEM.LASTVALUE1}'
+              priority: AVERAGE
+        - uuid: 49d1613f3a4b444b838571f3619c0604
+          name: 'Results awaiting import'
+          type: DEPENDENT
+          key: calcolalinee.jobs.awaiting
+          delay: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var j = JSON.parse(value).body.jobs;
+                  if (!j || !j.configured || !j.ok) throw 'no job counts';
+                  return j.awaiting_import;
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+        - uuid: 51b0f45e15be48c0bfb5f0c6155a48cd
+          name: 'Oldest result awaiting import age'
+          type: DEPENDENT
+          key: calcolalinee.jobs.awaiting.age
+          delay: '0'
+          units: s
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var j = JSON.parse(value).body.jobs;
+                  if (!j || !j.configured || !j.ok) throw 'no job counts';
+                  return j.oldest_awaiting_import_s || 0;
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+          triggers:
+            - uuid: 9261242d04eb45f29d278c9744c21ecc
+              expression: 'min(/calcolalinee by Zabbix agent active/calcolalinee.jobs.awaiting.age,5m)>{$CALCOLALINEE.IMPORT.MAX}'
+              name: 'calcolalinee: result not imported by ColdFusion for more than {$CALCOLALINEE.IMPORT.MAX}'
+              opdata: '{ITEM.LASTVALUE1}'
+              priority: HIGH
+              description: 'The ColdFusion importer polls every 61 s. Finished lines do not reach production until it imports them. The age counts from the job start, so the trigger waits until the age stays above the limit for 5 minutes. Close it by hand for a result that will never be imported.'
+              manual_close: 'YES'
+        - uuid: fc39f1362dba41d39eee9468ee554343
+          name: 'Jobs failed in 24h'
+          type: DEPENDENT
+          key: calcolalinee.jobs.failed
+          delay: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var j = JSON.parse(value).body.jobs;
+                  if (!j || !j.configured || !j.ok) throw 'no job counts';
+                  return j.failed_24h;
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: 'web.page.get[{$CALCOLALINEE.STATUS.URL}]'
+          triggers:
+            - uuid: c1d8ba32ba034d179abe8435e1b8bf19
+              expression: 'last(/calcolalinee by Zabbix agent active/calcolalinee.jobs.failed)>{$CALCOLALINEE.JOBS.FAILED.MAX}'
+              name: 'calcolalinee: more than {$CALCOLALINEE.JOBS.FAILED.MAX} failed jobs in 24h'
+              opdata: '{ITEM.LASTVALUE1}'
+              priority: WARNING
+      tags:
+        - tag: service
+          value: calcolalinee
+      macros:
+        - macro: '{$CALCOLALINEE.IMPORT.MAX}'
+          value: 1h
+          description: 'Maximum age of a finished result that ColdFusion has not imported.'
+        - macro: '{$CALCOLALINEE.INTERVAL}'
+          value: 1m
+          description: 'Update interval of the status page.'
+        - macro: '{$CALCOLALINEE.JOB.ACTIVE.MAX}'
+          value: 2h
+          description: 'Maximum age of a queued or running job.'
+        - macro: '{$CALCOLALINEE.JOBS.FAILED.MAX}'
+          value: '2'
+          description: 'Maximum number of failed jobs in 24 hours.'
+        - macro: '{$CALCOLALINEE.NODATA}'
+          value: 5m
+          description: 'Time without status data before a problem is raised.'
+        - macro: '{$CALCOLALINEE.STATS.HELD.MAX}'
+          value: '0'
+          description: 'Maximum number of days whose stats are held.'
+        - macro: '{$CALCOLALINEE.STATUS.URL}'
+          value: 'http://127.0.0.1:8877/api/status'
+          description: 'Status page URL as seen from the agent on the VM.'
+        - macro: '{$CALCOLALINEE.VALHALLA.MAXDOWN}'
+          value: 5m
+          description: 'Time Valhalla may be unreachable before a problem is raised.'
+  triggers:
+    - uuid: 3acc4b2d4ca147c48df87d9e745a2514
+      expression: 'last(/calcolalinee by Zabbix agent active/calcolalinee.http.code)<>200 and (last(/calcolalinee by Zabbix agent active/calcolalinee.http.code)<>503 or nodata(/calcolalinee by Zabbix agent active/calcolalinee.db.ok,{$CALCOLALINEE.NODATA})=1)'
+      name: 'calcolalinee: status page returns HTTP {ITEM.LASTVALUE1}'
+      priority: HIGH
+      description: 'A 503 with the status data of the app is reported by the database trigger. A 503 without it, for example from a proxy, raises this problem after {$CALCOLALINEE.NODATA}.'
