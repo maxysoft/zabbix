@@ -53,3 +53,15 @@ vulnerabilities:
   - id: CVE-2026-78410
     statement: "TimescaleDB image OS libraries (libcurl, libssl3, libcrypto3, libuuid): PostgreSQL is only on the internal network without a TLS listener, curl is only used by the PostgreSQL 18 OAuth client, which is not configured, and no fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
     expired_at: 2026-12-16
+  - id: CVE-2026-111497
+    statement: "TimescaleDB image brotli-libs: only required by libcurl, which is only used by the PostgreSQL 18 OAuth client, which is not configured. No fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
+    expired_at: 2026-11-16
+  - id: CVE-2026-92392
+    statement: "TimescaleDB image libcurl: only used by the PostgreSQL 18 OAuth client, which is not configured. No fixed image exists in the TimescaleDB range Zabbix 8.0 supports (2.20 to 2.29)."
+    expired_at: 2026-11-16
+  - id: CVE-2026-56851
+    statement: "zabbix-server and zabbix-web docker-entrypoint golang.org/x/text: the entrypoint only processes environment and config we set, never untrusted input. No fixed alpine-trunk image yet."
+    expired_at: 2026-11-16
+  - id: CVE-2026-109413
+    statement: "zabbix-web symfony/yaml: reachable only through the authenticated YAML import, by users with import rights. No fixed alpine-trunk image yet."
+    expired_at: 2026-11-16

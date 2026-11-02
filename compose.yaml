@@ -55,7 +55,7 @@ services:
 
   zabbix-server:
     <<: *hardened
-    image: zabbix/zabbix-server-pgsql:alpine-trunk@sha256:a14a8ce0abeacb395f1758169f98c915abf4729674a21740fc6f3559eb55d544
+    image: zabbix/zabbix-server-pgsql:alpine-trunk@sha256:36e10f1b4ad48ac1e808520a41683dd22fe17390f531acbe879f6ac63b598159
     restart: unless-stopped
     stop_grace_period: 30s
     cap_add: [NET_RAW]
@@ -90,7 +90,7 @@ services:
 
   zabbix-web:
     <<: *hardened
-    image: zabbix/zabbix-web-nginx-pgsql:alpine-trunk@sha256:5983fa35495be7c51c6e7bcf339c6fcc1b66c39c977acbe99859a97bdecbbca7
+    image: zabbix/zabbix-web-nginx-pgsql:alpine-trunk@sha256:68ca8393c5edc4b5d6f31ab296b9b83be4a78adbde58d8fc347013ad9ee15490
     read_only: false
     restart: unless-stopped
     depends_on:
