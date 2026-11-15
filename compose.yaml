@@ -67,9 +67,7 @@ services:
       ENABLE_TIMESCALEDB: "true"
     secrets: [zabbix_db_password]
     volumes:
-      # Mount files, not ./theme/dbscripts: a file mount nested in a directory mount creates an empty placeholder in the host directory.
       - ./config/zabbix/admin-password.sql:/var/lib/zabbix/dbscripts/00-admin-password.sql:ro
-      - ./theme/dbscripts/nord-graph-theme.sql:/var/lib/zabbix/dbscripts/nord-graph-theme.sql:ro
     tmpfs:
       - /tmp
       - /var/lib/zabbix/ssl/ssl_ca_internal:uid=1997,gid=0,mode=0775
@@ -117,8 +115,6 @@ services:
         target: /etc/ssl/nginx/ssl.key
     volumes:
       - ./config/nginx/dhparam.pem:/etc/ssl/nginx/dhparam.pem:ro
-      - ./theme/APP.php:/usr/share/zabbix/include/classes/core/APP.php:ro
-      - ./theme/nord-theme.css:/usr/share/zabbix/assets/styles/nord-theme.css:ro
     tmpfs:
       - /tmp
     ports:

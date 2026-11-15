@@ -16,8 +16,6 @@ The Docker host itself is monitored by Zabbix agent 2, installed on the host by 
 
 The stack runs the Zabbix 8.0 release candidate (8.0.0rc2 at the time of writing) through the `alpine-trunk` tags, the only Zabbix 8.0 images on Docker Hub before the 8.0.0 release. Every image in `compose.yaml` is pinned by digest. Renovate does not update the `alpine-trunk` images, because `trunk` moves on to Zabbix 8.2 after the 8.0.0 release. When the `alpine-8.0-latest` tags are published, change both Zabbix image lines in `compose.yaml` (`zabbix-server` and `zabbix-web`) to `alpine-8.0-latest` and its digest; from then on Renovate opens pull requests for image rebuilds and 8.0.x patch releases. TimescaleDB updates are limited to the versions Zabbix 8.0 supports.
 
-The Nord theme from the original project is included and ported to 8.0. Each user can select it under User settings > Profile > Theme.
-
 ## Requirements
 
 - A Linux host with Docker Engine 25 or later and the Docker Compose plugin v2.24 or later.
@@ -244,7 +242,16 @@ docker compose up -d --build
 
 The Zabbix server upgrades the database schema itself when it starts with a newer version. `zabbix-backup` and `zabbix-bootstrap` are built locally from `backup/Dockerfile` and `bootstrap/Dockerfile`. `docker compose pull` skips them, and `--build` rebuilds them, so a new base image in these files (for example from a Renovate pull request) takes effect.
 
-After an update of the web image, check that `theme/APP.php` still matches the `APP.php` of the new image, and regenerate the Nord stylesheet with `theme/build.sh`, which reads the web image from `compose.yaml`.
+#### Nord theme removal
+
+The stack no longer ships the Nord theme. Zabbix does not check the theme stored for a user, so a user who still has `nord-theme` gets the web UI without styles. In a database created before the removal, switch these users to the default theme and delete the Nord graph theme once:
+
+```sh
+docker compose exec -T postgres-server psql -U zabbix -d zabbix -v ON_ERROR_STOP=1 -c "
+  UPDATE users SET theme = 'default' WHERE theme = 'nord-theme';
+  UPDATE settings SET value_str = 'dark-theme' WHERE name = 'default_theme' AND value_str = 'nord-theme';
+  DELETE FROM graph_theme WHERE theme = 'nord-theme';"
+```
 
 #### From Zabbix 7.4
 
@@ -366,7 +373,7 @@ What the stack does by default:
 - TimescaleDB telemetry is off.
 - The host agent runs in active mode only and opens no port.
 - Every container runs as a non-root user with all Linux capabilities dropped and `no-new-privileges`. All of them except the web UI have a read-only root filesystem with `tmpfs` for runtime files.
-- Images are pinned by digest. The CI workflow runs shellcheck, validates the Compose file, checks that the Nord stylesheet matches the pinned web image, and scans the images (including the locally built backup image) with Trivy on every push and every week.
+- Images are pinned by digest. The CI workflow runs shellcheck, validates the Compose file, and scans the images (including the locally built backup image) with Trivy on every push and every week.
 
 The Trivy scan fails on fixable HIGH and CRITICAL vulnerabilities. Findings that do not affect this stack are listed in `.trivyignore.yaml`, each with the reason and an expiry date (`expired_at`). After that date the scan fails again, and each entry must be checked again: delete it when a new image fixes the vulnerability, or extend it with a new reason. The Go command-line tools of the TimescaleDB image (`gosu`, `timescaledb-parallel-copy`, `timescaledb-tune`) are skipped, because they never handle network input.
 
@@ -494,4 +501,4 @@ scripts/e2e.sh
 
 ## Credits
 
-This project is based on [r4ven-me/zabbix](https://github.com/r4ven-me/zabbix) by r4ven-me ([Telegram channel](https://t.me/r4ven_me/)), including the Nord theme. The remote agent setup is [r4ven-me/zabbix-agent](https://github.com/r4ven-me/zabbix-agent).
+This project is based on [r4ven-me/zabbix](https://github.com/r4ven-me/zabbix) by r4ven-me ([Telegram channel](https://t.me/r4ven_me/)). The remote agent setup is [r4ven-me/zabbix-agent](https://github.com/r4ven-me/zabbix-agent).

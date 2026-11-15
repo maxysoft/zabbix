@@ -104,7 +104,7 @@ wait_healthy() {
 
 echo "--- prepare $WD"
 mkdir -p "$WD/secrets"
-cp -r compose.yaml .env.example setup.sh config bootstrap scripts templates theme backup "$WD/"
+cp -r compose.yaml .env.example setup.sh config bootstrap scripts templates backup "$WD/"
 cd "$WD"
 sed -e "s/^ZBX_WEB_PORT=.*/ZBX_WEB_PORT=$WEB_PORT/" \
   -e "s/^ZBX_SERVER_PORT=.*/ZBX_SERVER_PORT=$SERVER_PORT/" \
@@ -158,7 +158,6 @@ for e in prod:#p test:#t; do
   r "user slack-\$env with Slack media \$ch" 'echo "{\"filter\": {\"username\": \"slack-\$env\"}, \"selectMedias\": [\"sendto\"]}" | api user.get | jq -e --arg ch "\$ch" ".[0].medias | length == 1 and .[0].sendto == \\\$ch"'
   r "action Slack: env=\$env enabled with tag condition env=\$env" 'echo "{\"filter\": {\"name\": \"Slack: env=\$env\"}, \"selectFilter\": \"extend\"}" | api action.get | jq -e --arg env "\$env" ".[0].status == \"0\" and .[0].filter.conditions[0].conditiontype == \"26\" and .[0].filter.conditions[0].value == \\\$env and .[0].filter.conditions[0].value2 == \"env\""'
 done
-r "Admin theme can be set to nord-theme" 'echo "{\"userid\": \"1\", \"theme\": \"nord-theme\"}" | api user.update'
 EOF
 
 echo "--- calcolalinee template (fake status page, agent 2 container in active mode with PSK)"
@@ -314,7 +313,6 @@ check "agent process runs and listens on no TCP port (passive checks off)" agent
 
 echo "--- DB, network and TLS checks"
 check "DB role zabbix is not a superuser" [ "$(psql_pg "SELECT rolsuper FROM pg_roles WHERE rolname = 'zabbix'")" = f ]
-check "Nord graph theme row exists" [ "$(psql_pg "SELECT count(*) FROM graph_theme WHERE theme = 'nord-theme'")" = 1 ]
 secrets_not_logged() {
   local f
   for f in zabbix_admin_password zabbix_db_password; do
