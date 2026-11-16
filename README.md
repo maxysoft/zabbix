@@ -203,7 +203,7 @@ The script supports Debian 12 and 13, Ubuntu 22.04 and 24.04, and RHEL 9 and 10 
 
 The agent runs in active mode only. It connects to the Zabbix server port published on the host (`ZBX_SERVER_BIND` and `ZBX_SERVER_PORT` from `.env`; `127.0.0.1` when the bind address is `0.0.0.0`). It listens on no port, because `Server` is empty. The bootstrap job links the template "Linux by Zabbix agent active" to the host "Zabbix server" in place of "Linux by Zabbix agent". It unlinks the old template without clearing it, so Zabbix merges its items into the items of the active template with the same keys, and their history stays. Items of the old template that the active template does not have, such as `zabbix[host,agent,available]` and its trigger "Zabbix agent is not available", are deleted. The job does this only while "Linux by Zabbix agent" is linked to the host, so template changes you make on the host later are kept.
 
-Until Zabbix 8.0.0 is released, agent 2 packages for 8.0 exist only in the `unstable` channel of the Zabbix repository. The current 8.0 `zabbix-release` package enables that channel itself, so the script installs the release candidate (8.0.0rc1 at the time of writing). After the 8.0.0 release, run the script again to install the current `zabbix-release` package and agent.
+The script installs agent 2 from the stable 8.0 channel of the Zabbix repository. Hosts that ran it before the 8.0.0 release have a release candidate from the `unstable` channel: run the script again. The current `zabbix-release` package disables that channel, and the script upgrades the agent to the current 8.0 release.
 
 On other distributions, install Zabbix agent 2 version 8.0 by hand and create `/etc/zabbix/zabbix_agent2.d/zabbix-compose.conf` with your values of `ZBX_SERVER_BIND` and `ZBX_SERVER_PORT`:
 
@@ -437,7 +437,7 @@ The job items read the `jobs` block of `/api/status`. With an app version that d
 
 Do this on the prod VM and on the test VM, as root. The examples are for prod; on the test VM use `calcolalinee-test` and a separate key.
 
-1. Install Zabbix agent 2 version 8.0 from `repo.zabbix.com`, the same way `scripts/install-agent.sh` does (see [Host agent](#host-agent) for the release candidate note). On Debian 13:
+1. Install Zabbix agent 2 version 8.0 from `repo.zabbix.com`, the same way `scripts/install-agent.sh` does. On Debian 13:
 
    ```sh
    curl -fsSLO https://repo.zabbix.com/zabbix/8.0/release/debian/pool/main/z/zabbix-release/zabbix-release_latest_8.0+debian13_all.deb
