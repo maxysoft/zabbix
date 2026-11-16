@@ -123,7 +123,8 @@ check "setup.sh is idempotent (secrets unchanged on second run)" [ "$sums1" = "$
 check "secret files are root-only on the host" [ "$(as_root 'stat -c %a:%U secrets')" = "700:root" ]
 
 echo "--- docker compose up"
-dc up -d --build 2>&1 | tail -n 3
+dc build --no-cache 2>&1 | tail -n 3
+dc up -d 2>&1 | tail -n 3
 check "stack healthy (postgres, server, web, backup)" wait_healthy
 check "Admin password set at schema creation by pgcrypto, so Admin/zabbix never worked" [ "$(psql_pg "SELECT left(passwd, 7) FROM users WHERE username = 'Admin'")" = "\$2a\$10\$" ]
 check "zabbix-bootstrap exited 0 on first up" [ "$(bootstrap_exit_code)" = 0 ]
