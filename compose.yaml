@@ -22,7 +22,7 @@ x-db-env: &db-env
 services:
   postgres-server:
     <<: *hardened
-    image: timescale/timescaledb:2.29.2-pg18@sha256:9508616d5b941ed931198504c5db3fb47e8f53f790732ea1e889591f1062057c
+    build: postgres
     user: postgres
     restart: unless-stopped
     stop_grace_period: 1m
@@ -55,7 +55,7 @@ services:
 
   zabbix-server:
     <<: *hardened
-    image: zabbix/zabbix-server-pgsql:alpine-trunk@sha256:36e10f1b4ad48ac1e808520a41683dd22fe17390f531acbe879f6ac63b598159
+    build: server
     restart: unless-stopped
     stop_grace_period: 30s
     cap_add: [NET_RAW]
@@ -88,7 +88,7 @@ services:
 
   zabbix-web:
     <<: *hardened
-    image: zabbix/zabbix-web-nginx-pgsql:alpine-trunk@sha256:68ca8393c5edc4b5d6f31ab296b9b83be4a78adbde58d8fc347013ad9ee15490
+    build: web
     read_only: false
     restart: unless-stopped
     depends_on:

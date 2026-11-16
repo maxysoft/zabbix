@@ -6,15 +6,15 @@ A production-oriented Zabbix stack: PostgreSQL with TimescaleDB, Zabbix server, 
 
 | Service | Image | Purpose |
 | --- | --- | --- |
-| `postgres-server` | `timescale/timescaledb:2.29.2-pg18` | PostgreSQL 18 with TimescaleDB. Data lives in the named volume `pgdata`. |
-| `zabbix-server` | `zabbix/zabbix-server-pgsql` | Zabbix server. Creates the schema and TimescaleDB hypertables on first start and sets the `Admin` password. |
-| `zabbix-web` | `zabbix/zabbix-web-nginx-pgsql` | Web UI and API, served by the image's nginx over HTTPS on container port 8443. |
+| `postgres-server` | built from `postgres/Dockerfile` | PostgreSQL 18 with TimescaleDB (`timescale/timescaledb:2.29.2-pg18`). Data lives in the named volume `pgdata`. |
+| `zabbix-server` | built from `server/Dockerfile` | Zabbix server (`zabbix/zabbix-server-pgsql`). Creates the schema and TimescaleDB hypertables on first start and sets the `Admin` password. |
+| `zabbix-web` | built from `web/Dockerfile` | Web UI and API (`zabbix/zabbix-web-nginx-pgsql`), served by the image's nginx over HTTPS on container port 8443. |
 | `zabbix-bootstrap` | built from `bootstrap/Dockerfile` | One-shot job that configures Zabbix through its API on every `docker compose up` and imports the templates in `templates/`. The image is Alpine with `bash`, `curl` and `jq`, because the Zabbix 8.0 server image no longer contains `curl` and `jq`. |
-| `zabbix-backup` | built from `backup/Dockerfile` | Nightly `pg_dump` of the Zabbix database into `./backups`, optionally encrypted with `age`. The image is `timescale/timescaledb:2.29.2-pg18` plus the `age` and `age-keygen` binaries. |
+| `zabbix-backup` | built from `backup/Dockerfile` | Nightly `pg_dump` of the Zabbix database into `./backups`, optionally encrypted with `age`. The image is the same TimescaleDB image plus the `age` and `age-keygen` binaries. |
 
 The Docker host itself is monitored by Zabbix agent 2, installed on the host by `scripts/install-agent.sh`. See [Host agent](#host-agent).
 
-The stack runs the Zabbix 8.0 release candidate (8.0.0rc2 at the time of writing) through the `alpine-trunk` tags, the only Zabbix 8.0 images on Docker Hub before the 8.0.0 release. Every image in `compose.yaml` is pinned by digest. Renovate does not update the `alpine-trunk` images, because `trunk` moves on to Zabbix 8.2 after the 8.0.0 release. When the `alpine-8.0-latest` tags are published, change both Zabbix image lines in `compose.yaml` (`zabbix-server` and `zabbix-web`) to `alpine-8.0-latest` and its digest; from then on Renovate opens pull requests for image rebuilds and 8.0.x patch releases. TimescaleDB updates are limited to the versions Zabbix 8.0 supports.
+The stack runs Zabbix 8.0 (8.0.0 at the time of writing) from the `alpine-8.0-latest` images. Every service image is built locally: each Dockerfile starts from the upstream image, pinned by digest, and runs `apk upgrade`, so Alpine security fixes apply without waiting for an upstream rebuild. Renovate opens a pull request for each new digest of these images. A new digest can be a rebuild or an 8.0.x patch release, so back up before you merge one. Do not use the `alpine-trunk` tags: they follow Zabbix master, which is now 8.2. TimescaleDB updates are limited to the versions Zabbix 8.0 supports.
 
 ## Requirements
 
@@ -233,14 +233,15 @@ To run the bootstrap job without restarting anything: `docker compose up -d zabb
 
 Back up before every upgrade.
 
-Patch releases and image rebuilds: merge the Renovate pull request, or update the digests in `compose.yaml` and the two Dockerfiles yourself, then:
+Patch releases, image rebuilds and Alpine security fixes: merge the Renovate pull request, or update the digests in the Dockerfiles yourself, then rebuild without the build cache:
 
 ```sh
-docker compose pull
-docker compose up -d --build
+docker compose build --pull --no-cache
+docker compose up -d
+docker image prune -f
 ```
 
-The Zabbix server upgrades the database schema itself when it starts with a newer version. `zabbix-backup` and `zabbix-bootstrap` are built locally from `backup/Dockerfile` and `bootstrap/Dockerfile`. `docker compose pull` skips them, and `--build` rebuilds them, so a new base image in these files (for example from a Renovate pull request) takes effect.
+The rebuild recreates every container, including `postgres-server`, so the database and Zabbix restart briefly. `docker image prune -f` removes the replaced images, and any other dangling image on the host. Without `--no-cache`, Docker reuses the cached `apk upgrade` layer and the images keep their old packages. Rebuild this way regularly, for example weekly, even without a new digest: the CI scan builds fresh images, so it does not report Alpine fixes that the running images lack. The Zabbix server upgrades the database schema itself when it starts with a newer version.
 
 #### Nord theme removal
 
@@ -255,7 +256,7 @@ docker compose exec -T postgres-server psql -U zabbix -d zabbix -v ON_ERROR_STOP
 
 #### From Zabbix 7.4
 
-Read the Zabbix 8.0 upgrade notes first. Zabbix 8.0 supports PostgreSQL 15 to 18 and TimescaleDB 2.20 to 2.29; the stack keeps `timescale/timescaledb:2.29.2-pg18`. In 7.4 the agent ran in the container `zabbix-agent`; in 8.0 it runs on the host.
+Read the Zabbix 8.0 upgrade notes first. Zabbix 8.0.0 supports PostgreSQL 15 to 18 and TimescaleDB 2.20 to 2.29; the stack keeps `timescale/timescaledb:2.29.2-pg18`. In 7.4 the agent ran in the container `zabbix-agent`; in 8.0 it runs on the host.
 
 1. Back up: `docker compose run --rm zabbix-backup --once`.
 2. Stop the 7.4 server: `docker compose stop zabbix-server`. A running 7.4 server, or one that stopped less than a minute ago without shutting down cleanly, makes the 8.0 server wait before it upgrades the database.
@@ -280,16 +281,16 @@ Read the Zabbix 8.0 upgrade notes first. Zabbix 8.0 supports PostgreSQL 15 to 18
 
 Until step 6 the host "Zabbix server" receives no agent data. The old agent interface `zabbix-agent:10050` stays on the host but is no longer used.
 
-TimescaleDB: never move to a TimescaleDB version that your Zabbix version does not support. Zabbix 8.0 supports TimescaleDB 2.20 to 2.29 and refuses to start with an unsupported version. `backup/Dockerfile` uses the same TimescaleDB image as `postgres-server`; change both together. To change the TimescaleDB image, stop the database clients, start the new image, update the extension as the `postgres` superuser in every database that has it (the `zabbix` role does not own the extension), then start the rest of the stack:
+TimescaleDB: never move to a TimescaleDB version that your Zabbix version does not support. Zabbix 8.0.0 supports TimescaleDB 2.20 to 2.29, Zabbix 8.0.1 and later also 2.30; Zabbix refuses to start with an unsupported version. `postgres/Dockerfile` and `backup/Dockerfile` use the same TimescaleDB image; change both together. To change the TimescaleDB image, stop the database clients, start the new image, update the extension as the `postgres` superuser in every database that has it (the `zabbix` role does not own the extension), then start the rest of the stack:
 
 ```sh
 docker compose stop zabbix-server zabbix-web zabbix-backup
-docker compose pull postgres-server
+docker compose build --pull --no-cache postgres-server zabbix-backup
 docker compose up -d postgres-server
 for db in zabbix postgres template1; do
   docker compose exec -T postgres-server psql -U postgres -d "$db" -X -c 'ALTER EXTENSION timescaledb UPDATE'
 done
-docker compose up -d --build
+docker compose up -d
 ```
 
 PostgreSQL major versions (18 to 19) need a dump and restore into a new volume; see [Restore](#restore).
@@ -373,7 +374,7 @@ What the stack does by default:
 - TimescaleDB telemetry is off.
 - The host agent runs in active mode only and opens no port.
 - Every container runs as a non-root user with all Linux capabilities dropped and `no-new-privileges`. All of them except the web UI have a read-only root filesystem with `tmpfs` for runtime files.
-- Images are pinned by digest. The CI workflow runs shellcheck, validates the Compose file, and scans the images (including the locally built backup image) with Trivy on every push and every week.
+- Base images are pinned by digest. The CI workflow runs shellcheck, validates the Compose file, builds every image in `compose.yaml` and scans it with Trivy on every push and every week. CI builds fresh images, so a green scan does not cover the images running on the host until they are rebuilt (see [Upgrades](#upgrades)).
 
 The Trivy scan fails on fixable HIGH and CRITICAL vulnerabilities. Findings that do not affect this stack are listed in `.trivyignore.yaml`, each with the reason and an expiry date (`expired_at`). After that date the scan fails again, and each entry must be checked again: delete it when a new image fixes the vulnerability, or extend it with a new reason. The Go command-line tools of the TimescaleDB image (`gosu`, `timescaledb-parallel-copy`, `timescaledb-tune`) are skipped, because they never handle network input.
 

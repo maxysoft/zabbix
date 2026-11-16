@@ -13,11 +13,11 @@ WD=$REPO/.audit/e2e/$RUN
 WEB_PORT=18443
 SERVER_PORT=20051
 URL=https://localhost:$WEB_PORT
-SERVER_IMAGE=$(sed -n 's/^ *image: *\(zabbix\/zabbix-server-pgsql:.*\)$/\1/p' compose.yaml | head -n 1)
-WEB_IMAGE=$(sed -n 's/^ *image: *\(zabbix\/zabbix-web-nginx-pgsql:.*\)$/\1/p' compose.yaml | head -n 1)
+SERVER_IMAGE=$(sed -n 's/^FROM //p' server/Dockerfile)
+WEB_IMAGE=$(sed -n 's/^FROM //p' web/Dockerfile)
 AGENT_IMAGE=debian:13@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1
 AGENT=zbxe2e-agent-$$
-AGENT2_IMAGE=zabbix/zabbix-agent2:alpine-trunk@sha256:3f45d54e046cc876fa54fd765df4945e3ac1602156b6b385181d19b7d4358d69
+AGENT2_IMAGE=zabbix/zabbix-agent2:alpine-8.0-latest@sha256:0000984ce38fe4cfcf366a2a12e3aff389f16cfeab973f74bf135a2731b8c919
 CAL_AGENT=zbxe2e-agent2-$$
 STATUS_CT=zbxe2e-status-$$
 STATUS_PORT=18877
@@ -104,7 +104,7 @@ wait_healthy() {
 
 echo "--- prepare $WD"
 mkdir -p "$WD/secrets"
-cp -r compose.yaml .env.example setup.sh config bootstrap scripts templates backup "$WD/"
+cp -r compose.yaml .env.example setup.sh config bootstrap scripts templates backup postgres server web "$WD/"
 cd "$WD"
 sed -e "s/^ZBX_WEB_PORT=.*/ZBX_WEB_PORT=$WEB_PORT/" \
   -e "s/^ZBX_SERVER_PORT=.*/ZBX_SERVER_PORT=$SERVER_PORT/" \

@@ -41,10 +41,10 @@ jobs:
               --skip-files /usr/local/bin/gosu,/usr/local/bin/timescaledb-parallel-copy,/usr/local/bin/timescaledb-tune \
               "$2" || status=1
           }
-          for img in backup bootstrap; do
-            docker build -q -t "zabbix-$img:ci" "$img"
-            scan docker "zabbix-$img:ci"
-          done
+          while read -r dir; do
+            docker build -q -t "zabbix-$dir:ci" "$dir"
+            scan docker "zabbix-$dir:ci"
+          done < <(sed -n 's/^[[:space:]]*build:[[:space:]]*\([^[:space:]]*\).*/\1/p' compose.yaml | sort -u)
           while read -r img; do
             scan remote "$img"
           done < <(sed -n 's/^[[:space:]]*image:[[:space:]]*["'"'"']\{0,1\}\([^"'"'"'[:space:]]*\).*/\1/p' compose.yaml | sort -u)

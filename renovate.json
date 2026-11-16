@@ -22,11 +22,6 @@
       "groupName": "zabbix"
     },
     {
-      "matchPackageNames": ["zabbix/**"],
-      "matchCurrentValue": "alpine-trunk",
-      "enabled": false
-    },
-    {
       "matchPackageNames": ["timescale/timescaledb"],
       "allowedVersions": "/^2\\.2[0-9]\\.\\d+-pg18$/"
     }

@@ -3,4 +3,5 @@ ARG AGE_VERSION=v1.3.2
 RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags=-s filippo.io/age/cmd/age@$AGE_VERSION filippo.io/age/cmd/age-keygen@$AGE_VERSION
 
 FROM timescale/timescaledb:2.29.2-pg18@sha256:9508616d5b941ed931198504c5db3fb47e8f53f790732ea1e889591f1062057c
+RUN apk upgrade --no-cache
 COPY --from=age /out/ /usr/local/bin/
