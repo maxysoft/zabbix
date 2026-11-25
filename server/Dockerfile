@@ -1,4 +1,4 @@
-FROM zabbix/zabbix-server-pgsql:alpine-8.0-latest@sha256:a82f1ea70d2b89b353fe52c9524f59af1ed654f96d36f3dfa5015406bd1eae44
+FROM zabbix/zabbix-server-pgsql:alpine-8.0-latest@sha256:2062175d78a0b6f9abfb017bb01e402a80d94d4aac66d40d0ac165592a6f1d48
 USER root
 RUN apk upgrade --no-cache
 USER 1997
