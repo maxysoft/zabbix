@@ -6,7 +6,7 @@ A production-oriented Zabbix stack: PostgreSQL with TimescaleDB, Zabbix server, 
 
 | Service | Image | Purpose |
 | --- | --- | --- |
-| `postgres-server` | built from `postgres/Dockerfile` | PostgreSQL 18 with TimescaleDB (`timescale/timescaledb:2.29.2-pg18`). Data lives in the named volume `pgdata`. |
+| `postgres-server` | built from `postgres/Dockerfile` | PostgreSQL 18 with TimescaleDB (`timescale/timescaledb:2.29.3-pg18`). Data lives in the named volume `pgdata`. |
 | `zabbix-server` | built from `server/Dockerfile` | Zabbix server (`zabbix/zabbix-server-pgsql`). Creates the schema and TimescaleDB hypertables on first start and sets the `Admin` password. |
 | `zabbix-web` | built from `web/Dockerfile` | Web UI and API (`zabbix/zabbix-web-nginx-pgsql`), served by the image's nginx over HTTPS on container port 8443. |
 | `zabbix-bootstrap` | built from `bootstrap/Dockerfile` | One-shot job that configures Zabbix through its API on every `docker compose up` and imports the templates in `templates/`. The image is Alpine with `bash`, `curl` and `jq`, because the Zabbix 8.0 server image no longer contains `curl` and `jq`. |
@@ -241,7 +241,7 @@ docker compose up -d
 docker image prune -f
 ```
 
-The rebuild recreates every container, including `postgres-server`, so the database and Zabbix restart briefly. `docker image prune -f` removes the replaced images, and any other dangling image on the host. Without `--no-cache`, Docker reuses the cached `apk upgrade` layer and the images keep their old packages. Rebuild this way regularly, for example weekly, even without a new digest: the CI scan builds fresh images, so it does not report Alpine fixes that the running images lack. The Zabbix server upgrades the database schema itself when it starts with a newer version.
+The rebuild recreates every container, including `postgres-server`, so the database and Zabbix restart briefly. `docker image prune -f` removes the replaced images, and any other dangling image on the host. Without `--no-cache`, Docker reuses the cached `apk upgrade` layer and the images keep their old packages. Rebuild this way regularly, for example weekly, even without a new digest: the CI scan builds fresh images, so it does not report Alpine fixes that the running images lack. The Zabbix server upgrades the database schema itself when it starts with a newer version. A new TimescaleDB image (`postgres/Dockerfile` and `backup/Dockerfile`) needs the TimescaleDB procedure below instead, because the extension must be updated in the database.
 
 #### Nord theme removal
 
@@ -256,7 +256,7 @@ docker compose exec -T postgres-server psql -U zabbix -d zabbix -v ON_ERROR_STOP
 
 #### From Zabbix 7.4
 
-Read the Zabbix 8.0 upgrade notes first. Zabbix 8.0.0 supports PostgreSQL 15 to 18 and TimescaleDB 2.20 to 2.29; the stack keeps `timescale/timescaledb:2.29.2-pg18`. In 7.4 the agent ran in the container `zabbix-agent`; in 8.0 it runs on the host.
+Read the Zabbix 8.0 upgrade notes first. Zabbix 8.0.0 supports PostgreSQL 15 to 18 and TimescaleDB 2.20 to 2.29; the stack keeps `timescale/timescaledb:2.29.3-pg18`. In 7.4 the agent ran in the container `zabbix-agent`; in 8.0 it runs on the host.
 
 1. Back up: `docker compose run --rm zabbix-backup --once`.
 2. Stop the 7.4 server: `docker compose stop zabbix-server`. A running 7.4 server, or one that stopped less than a minute ago without shutting down cleanly, makes the 8.0 server wait before it upgrades the database.
@@ -292,6 +292,10 @@ for db in zabbix postgres template1; do
 done
 docker compose up -d
 ```
+
+Between the start of the new image and `ALTER EXTENSION timescaledb UPDATE`, TimescaleDB background jobs can log `cannot drop portal "" while it is being set up`. The errors stop after the update; the jobs run again on their next schedule.
+
+The TimescaleDB image also sets the PostgreSQL minor version. Read the "Updating" section of the PostgreSQL release notes for steps after the update. For 18.7: reindex a table only if reading it reports `missing chunk number` errors; the `zabbix` database has only B-tree indexes and no `bpchar` columns, so the other reindex steps do not apply.
 
 PostgreSQL major versions (18 to 19) need a dump and restore into a new volume; see [Restore](#restore).
 
