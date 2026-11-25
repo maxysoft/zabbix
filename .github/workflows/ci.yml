@@ -14,7 +14,7 @@ jobs:
   lint:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: shellcheck
         run: shellcheck setup.sh scripts/*.sh bootstrap/*.sh config/postgres/initdb/*.sh
       - name: compose config
@@ -29,13 +29,13 @@ jobs:
   scan:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: trivy
         run: |
           status=0
           scan() {
             docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/.trivyignore.yaml:/trivyignore.yaml:ro" \
-              aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222 \
+              aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb \
               image --image-src "$1" --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
               --ignorefile /trivyignore.yaml \
               --skip-files /usr/local/bin/gosu,/usr/local/bin/timescaledb-parallel-copy,/usr/local/bin/timescaledb-tune \
